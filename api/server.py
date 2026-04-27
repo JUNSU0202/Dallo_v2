@@ -15,6 +15,15 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from api.auth import verify_api_key
+from api.dto.responses import (
+    StatsResponse,
+    VulnerabilitiesResponse,
+    VulnerabilitiesByFileResponse,
+    VulnerabilitiesByTypeResponse,
+    PatchesResponse,
+    SessionsResponse,
+    AnalyzeStartResponse,
+)
 import json
 import re
 import os
@@ -368,7 +377,7 @@ def root():
     return {"message": "Dallo DevSecOps API", "version": "1.0.0"}
 
 
-@app.get("/api/stats", dependencies=[Depends(verify_api_key)])
+@app.get("/api/stats", response_model=StatsResponse, dependencies=[Depends(verify_api_key)])
 def get_stats():
     """대시보드 메인 통계 (DB 우선, 폴백: JSON 파일)"""
     stats = db_service.get_stats()
@@ -403,7 +412,7 @@ def get_stats():
     }
 
 
-@app.get("/api/vulnerabilities", dependencies=[Depends(verify_api_key)])
+@app.get("/api/vulnerabilities", response_model=VulnerabilitiesResponse, dependencies=[Depends(verify_api_key)])
 def get_vulnerabilities(
     severity: Optional[str] = Query(None, description="HIGH, MEDIUM, LOW"),
     tool: Optional[str] = Query(None, description="bandit, sonarqube"),
@@ -445,7 +454,7 @@ def get_vulnerabilities(
     return {"count": len(vulns), "vulnerabilities": vulns}
 
 
-@app.get("/api/vulnerabilities/by-file", dependencies=[Depends(verify_api_key)])
+@app.get("/api/vulnerabilities/by-file", response_model=VulnerabilitiesByFileResponse, dependencies=[Depends(verify_api_key)])
 def get_vulnerabilities_by_file():
     """파일별 취약점 수 집계"""
     data = get_vulnerabilities(severity=None, tool=None, file_path=None)
@@ -464,7 +473,7 @@ def get_vulnerabilities_by_file():
     return {"files": list(file_counts.values())}
 
 
-@app.get("/api/vulnerabilities/by-type", dependencies=[Depends(verify_api_key)])
+@app.get("/api/vulnerabilities/by-type", response_model=VulnerabilitiesByTypeResponse, dependencies=[Depends(verify_api_key)])
 def get_vulnerabilities_by_type():
     """취약점 유형별 집계"""
     data = get_vulnerabilities(severity=None, tool=None, file_path=None)
@@ -482,7 +491,7 @@ def get_vulnerabilities_by_type():
     return {"types": list(type_counts.values())}
 
 
-@app.get("/api/patches", dependencies=[Depends(verify_api_key)])
+@app.get("/api/patches", response_model=PatchesResponse, dependencies=[Depends(verify_api_key)])
 def get_patches():
     """LLM 수정 제안 목록"""
     full = load_full_result()
@@ -506,7 +515,7 @@ def get_patches():
     return {"count": len(enriched), "patches": enriched}
 
 
-@app.get("/api/sessions", dependencies=[Depends(verify_api_key)])
+@app.get("/api/sessions", response_model=SessionsResponse, dependencies=[Depends(verify_api_key)])
 def get_sessions():
     """분석 세션 이력 (DB)"""
     sessions = db_service.get_all_sessions()
@@ -578,7 +587,7 @@ def _run_analysis(job_id: str, code: str, filename: str, use_llm: bool, provider
         analysis_jobs[job_id]["step"] = f"오류: {str(e)}"
 
 
-@app.post("/api/analyze", dependencies=[Depends(verify_api_key)])
+@app.post("/api/analyze", response_model=AnalyzeStartResponse, dependencies=[Depends(verify_api_key)])
 def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
     """코드를 제출하여 분석을 시작합니다. Celery 사용 가능 시 task로 제출."""
     if _USE_CELERY:
