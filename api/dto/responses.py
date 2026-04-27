@@ -7,6 +7,9 @@
 - 누락 가능한 필드는 Optional로 두어 빈 상태에서도 직렬화가 가능하도록 합니다.
 - extra="allow"로 두어 레거시/추가 필드가 응답에서 사라지지 않게 합니다
   (FastAPI response_model 필터링이 프런트엔드 의존 필드를 떨어뜨리지 않도록).
+- 라우터는 response_model_exclude_unset=True로 호출하여, 핸들러가 반환하지 않은
+  Optional 필드가 null로 채워져 응답 셰이프에 새 키가 생기는 것을 막습니다
+  (HEAD~1과 동일한 키 집합 보장).
 """
 
 from typing import Any, Optional

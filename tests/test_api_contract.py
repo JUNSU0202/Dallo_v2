@@ -350,6 +350,105 @@ class TestSessionsContract:
 # /api/analyze (use_llm=False, 백그라운드 작업은 노옵으로 모킹)
 # ============================================================
 
+class TestUnsetFieldExclusionRegression:
+    """
+    response_model이 핸들러가 set 하지 않은 Optional 필드를 null로 채워 넣어
+    응답에 새 키가 생기던 회귀를 차단한다.
+
+    배경: Wave 2-A에서 dict 반환을 Pydantic response_model로 변환할 때
+    기본값이 None인 Optional 필드(stats: session_id/total_sessions/
+    duration_seconds, vulnerability item: function_code 등)가 응답에
+    'key: null' 로 추가되어 셰이프가 변경되는 회귀가 발생했다.
+    response_model_exclude_unset=True 적용 후에는 핸들러가 dict에 명시한
+    키만 응답에 노출되어야 한다.
+    """
+
+    # 비어 있는 /api/stats가 반환해야 하는 정확한 키 집합
+    EMPTY_STATS_EXACT_KEYS = {
+        "total_issues", "high", "medium", "low",
+        "patches_generated", "patches_verified",
+    }
+    # 비어 있는 응답에 절대 추가되어선 안 되는 Optional 키
+    FORBIDDEN_EMPTY_STATS_KEYS = {"session_id", "total_sessions", "duration_seconds"}
+
+    def test_stats_empty_response_has_exact_key_set(self, monkeypatch):
+        """
+        DB / full_result / bandit_report 모두 비어 있을 때 /api/stats 응답은
+        정확히 6개 키만 가져야 한다 (session_id/total_sessions/duration_seconds
+        가 null로 추가되지 않음).
+        """
+        # DB 상태에 의존하지 않도록 빈 통계로 강제
+        monkeypatch.setattr(
+            db_service, "get_stats",
+            lambda: {
+                "total_issues": 0, "high": 0, "medium": 0, "low": 0,
+                "patches_generated": 0, "patches_verified": 0,
+            },
+        )
+        # full_result.json / bandit_report.json 폴백도 빈 상태로 강제
+        monkeypatch.setattr(api_server, "load_full_result", lambda: {})
+        monkeypatch.setattr(
+            api_server, "load_bandit_report",
+            lambda: {"results": [], "metrics": {"_totals": {}}},
+        )
+
+        r = client.get("/api/stats", headers=_AUTH_HEADERS)
+        assert r.status_code == 200
+        actual_keys = set(r.json().keys())
+
+        unexpected = actual_keys - self.EMPTY_STATS_EXACT_KEYS
+        missing = self.EMPTY_STATS_EXACT_KEYS - actual_keys
+        assert not unexpected and not missing, (
+            f"/api/stats(empty) 키 셰이프 깨짐: unexpected={unexpected}, "
+            f"missing={missing}, actual={sorted(actual_keys)}"
+        )
+        # 명시적으로 금지된 Optional 키가 없어야 함
+        leaked = actual_keys & self.FORBIDDEN_EMPTY_STATS_KEYS
+        assert not leaked, (
+            f"unset Optional 필드가 응답에 null로 추가됨 (response_model_"
+            f"exclude_unset 회귀): {leaked}"
+        )
+
+    def test_vulnerability_fallback_item_has_no_function_code(self, monkeypatch):
+        """
+        bandit fallback 경로(load_full_result가 비었을 때)는 항목 dict에
+        function_code 키를 포함하지 않는다. response_model이 Optional
+        function_code를 None으로 채워 넣어 키가 새로 생기면 안 된다.
+        """
+        # full_result는 비워서 bandit fallback 경로를 강제
+        monkeypatch.setattr(api_server, "load_full_result", lambda: {})
+        monkeypatch.setattr(
+            api_server, "load_bandit_report",
+            lambda: {
+                "results": [
+                    {
+                        "test_id": "B608",
+                        "test_name": "SQL Injection",
+                        "issue_severity": "HIGH",
+                        "issue_confidence": "HIGH",
+                        "issue_text": "f-string SQL",
+                        "filename": "app.py",
+                        "line_number": 7,
+                        "code": "query = f'SELECT * FROM u WHERE id={uid}'",
+                        "issue_cwe": {"id": 89},
+                        "more_info": "https://example.test/B608",
+                    }
+                ],
+                "metrics": {"_totals": {"SEVERITY.HIGH": 1}},
+            },
+        )
+
+        r = client.get("/api/vulnerabilities", headers=_AUTH_HEADERS)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["count"] == 1
+        item = data["vulnerabilities"][0]
+        assert "function_code" not in item, (
+            f"source 항목에 없던 function_code 키가 응답에 추가됨 "
+            f"(response_model_exclude_unset 회귀): keys={sorted(item.keys())}"
+        )
+
+
 class TestAnalyzeContract:
     """POST /api/analyze 즉시 응답 셰이프 (LLM/네트워크 호출 없음)"""
 
