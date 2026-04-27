@@ -12,7 +12,7 @@
   (HEAD~1과 동일한 키 집합 보장).
 """
 
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
 
