@@ -32,6 +32,16 @@ from db import service as db_service
 router = APIRouter()
 
 
+def _safe_report_filename(filename: str) -> str:
+    """다운로드 요청 파일명에서 경로 구분자를 ``_`` 로 치환한다.
+
+    Wave 2-Q: 기존 inline 로직(``replace("/", "_").replace("\\", "_")``) 을
+    헬퍼로 추출했다. 동작은 보존하며, 다운로드 라우터 단일 진입점에서만
+    sanitize 를 수행하도록 모은다.
+    """
+    return filename.replace("/", "_").replace("\\", "_")
+
+
 def _load_report_data(session_id: Optional[str]) -> Optional[dict]:
     """DB → JSON 폴백 순서로 분석 결과를 로드한다."""
     if session_id:
@@ -88,8 +98,8 @@ def generate_report(
 @router.get("/api/report/download/{filename}", dependencies=[Depends(verify_api_key)])
 def download_report(filename: str):
     """생성된 리포트 파일을 다운로드합니다."""
-    safe_name = filename.replace("/", "_").replace("\\", "_")
-    path = os.path.join(result_sources.REPORTS_DIR, safe_name)
+    safe_name = _safe_report_filename(filename)
+    path = result_sources.reports_path(safe_name)
     if not os.path.exists(path):
         return {"error": "리포트 파일을 찾을 수 없습니다."}
 
