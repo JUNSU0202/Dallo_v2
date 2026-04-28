@@ -86,3 +86,55 @@ class TestAPIEndpoints:
         data = r.json()
         assert "count" in data
         assert "sessions" in data
+
+    def test_session_detail_not_found(self):
+        """존재하지 않는 세션 상세 조회는 error 메시지를 반환"""
+        r = client.get(
+            "/api/sessions/__nonexistent_session_id__",
+            headers=_AUTH_HEADERS,
+        )
+        assert r.status_code == 200
+        assert r.json() == {"error": "Session not found"}
+
+    def test_quick_scan_response_shape(self):
+        """POST /api/quick-scan 응답 셰이프 (인증 + 키 집합)"""
+        payload = {
+            "code": "import hashlib\nh = hashlib.md5(b'x')\n",
+            "language": "python",
+        }
+        r = client.post("/api/quick-scan", json=payload, headers=_AUTH_HEADERS)
+        assert r.status_code == 200
+        data = r.json()
+        assert set(data.keys()) == {"findings", "count", "elapsed_ms", "scan_type"}
+        assert data["scan_type"] == "quick"
+        assert isinstance(data["findings"], list)
+        assert data["count"] == len(data["findings"])
+        # 알려진 룰(MD5 해시) 이 탐지되어야 함
+        assert any(f.get("rule_id") == "QS-WEAK-HASH" for f in data["findings"])
+        for f in data["findings"]:
+            assert {"rule_id", "title", "severity", "cwe", "line", "code", "message"} <= set(f.keys())
+
+    def test_quick_scan_requires_auth(self):
+        """API 키 없이 호출 시 인증 실패"""
+        r = client.post("/api/quick-scan", json={"code": "", "language": "python"})
+        assert r.status_code in (401, 403)
+
+    def test_quick_scan_project_response_shape(self):
+        """POST /api/quick-scan-project 응답 셰이프"""
+        payload = {
+            "files": [
+                {"path": "a.py", "code": "import hashlib\nhashlib.md5(b'x')\n"},
+                {"path": "b.js", "code": "Math.random();\n"},
+            ]
+        }
+        r = client.post("/api/quick-scan-project", json=payload, headers=_AUTH_HEADERS)
+        assert r.status_code == 200
+        data = r.json()
+        assert set(data.keys()) == {
+            "files", "total_files", "total_findings", "summary", "elapsed_ms",
+        }
+        assert data["total_files"] == 2
+        assert isinstance(data["files"], list)
+        assert set(data["summary"].keys()) >= {"HIGH", "MEDIUM", "LOW"}
+        for fr in data["files"]:
+            assert {"path", "language", "findings", "count"} <= set(fr.keys())
