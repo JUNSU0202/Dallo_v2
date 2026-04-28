@@ -10,8 +10,10 @@ Wave 2-F: api/server.py 에서 분리된 POST /api/apply-patch 엔드포인트.
 설계 메모:
   - requests / base64 / difflib 임포트는 함수 내부에서 lazy 로 처리하여
     api 패키지 임포트 시 외부 네트워크 라이브러리 import 비용을 줄인다.
-  - 업로드 디렉터리는 모듈 변수 UPLOAD_DIR 로 노출하여 테스트가 monkeypatch
-    할 수 있게 한다 (server.py 와 동일한 기본값).
+  - 업로드 디렉터리 기본값은 ``api.settings.UPLOAD_DIR`` (단일 소스 오브
+    트루스)에서 가져오되 모듈 변수 ``UPLOAD_DIR`` 로 재노출하여 기존 테스트
+    의 ``monkeypatch.setattr(patch_router, "UPLOAD_DIR", ...)`` 패턴을
+    그대로 지원한다.
   - api.server 를 import 하지 않아 순환 import 위험이 없다.
   - 토큰 값은 응답 메시지/로그 어디에도 노출하지 않는다.
 """
@@ -25,10 +27,12 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from api.auth import verify_api_key
+from api.settings import UPLOAD_DIR as _SETTINGS_UPLOAD_DIR
 
 router = APIRouter()
 
-UPLOAD_DIR = "uploads"
+# 모듈 레벨 바인딩으로 노출하여 monkeypatch 호환성을 유지한다.
+UPLOAD_DIR = _SETTINGS_UPLOAD_DIR
 
 
 class ApplyPatchRequest(BaseModel):
