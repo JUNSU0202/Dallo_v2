@@ -423,6 +423,59 @@ class TestRouterImportSurface:
 
 
 # ============================================================
+# Wave 2-L: 라우터는 비즈니스 로직을 서비스 모듈에 위임해야 한다
+# ============================================================
+
+class TestRouterDelegatesToService:
+    """라우터 본문에서 GitHub 워크플로/HTTP/base64 직접 호출이 사라져야 한다.
+
+    엔드포인트 함수의 소스 본문을 AST 로 검사해 다음을 금지한다:
+      - ``requests.get``/``post``/``put`` 직접 호출
+      - ``base64.b64encode`` 직접 호출
+      - GitHub API URL 문자열 직접 구성 (``api.github.com`` 또는 ``/git/refs``)
+    """
+
+    def _endpoint_source(self) -> str:
+        import ast
+        import inspect
+
+        import api.routers.patch as mod
+
+        tree = ast.parse(inspect.getsource(mod))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "apply_patch":
+                return ast.unparse(node)
+        raise AssertionError("apply_patch 엔드포인트를 찾을 수 없음")
+
+    def test_endpoint_does_not_call_requests_methods(self):
+        src = self._endpoint_source()
+        assert "http_requests.get" not in src, "requests.get 직접 호출 금지"
+        assert "http_requests.post" not in src, "requests.post 직접 호출 금지"
+        assert "http_requests.put" not in src, "requests.put 직접 호출 금지"
+
+    def test_endpoint_does_not_call_base64(self):
+        src = self._endpoint_source()
+        assert "b64encode" not in src, "base64.b64encode 직접 호출 금지"
+
+    def test_endpoint_does_not_construct_github_urls(self):
+        src = self._endpoint_source()
+        assert "api.github.com" not in src, "GitHub URL 직접 구성 금지"
+        assert "/git/refs" not in src, "GitHub refs URL 직접 구성 금지"
+
+    def test_endpoint_does_not_run_difflib_directly(self):
+        src = self._endpoint_source()
+        assert "difflib.unified_diff" not in src, (
+            "difflib.unified_diff 직접 호출 대신 서비스 헬퍼를 호출해야 함"
+        )
+
+    def test_service_module_exists(self):
+        from api.services import patch_application as svc
+
+        # 서비스 모듈은 핵심 워크플로 진입점을 노출해야 한다
+        assert callable(getattr(svc, "apply_patch_workflow", None))
+
+
+# ============================================================
 # 서비스 부트스트랩 스모크 — POST /api/apply-patch 로컬 폴백
 # ============================================================
 
