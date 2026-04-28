@@ -10,6 +10,8 @@ Wave 2-D: 리포트 생성/다운로드/미리보기 엔드포인트를 server.p
 
 설계 메모:
   - 데이터 로드 폴백은 api.result_sources.load_full_result 헬퍼를 재사용한다.
+  - 프로젝트 루트 산정도 api.result_sources.project_root 공유 헬퍼를 사용한다
+    (api/routers/dependencies.py 와 동일 경로 보장).
   - reports.report_generator 의존성은 본 모듈 안에서 lazy import 하여
     api 패키지 임포트 시 의존성이 끌려오지 않도록 한다.
   - api.server 를 import 하지 않아 순환 import 위험이 없다.
@@ -30,11 +32,6 @@ from db import service as db_service
 router = APIRouter()
 
 
-def _project_root() -> str:
-    """api/ 의 부모(=프로젝트 루트). 의존성 스캐너가 사용한다."""
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
 def _load_report_data(session_id: Optional[str]) -> Optional[dict]:
     """DB → JSON 폴백 순서로 분석 결과를 로드한다."""
     if session_id:
@@ -53,7 +50,7 @@ def _scan_dependencies_safely() -> Optional[dict]:
         from analyzer.dependency_scanner import DependencyScanner
 
         scanner = DependencyScanner()
-        return {"results": [r.to_dict() for r in scanner.scan(_project_root())]}
+        return {"results": [r.to_dict() for r in scanner.scan(result_sources.project_root())]}
     except Exception:
         return None
 

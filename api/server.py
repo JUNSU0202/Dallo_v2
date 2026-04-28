@@ -17,6 +17,7 @@ from api.auth import verify_api_key
 from api.dto.responses import AnalyzeStartResponse
 from api.result_sources import REPORTS_DIR
 from api.routers.dashboard import router as dashboard_router
+from api.routers.dependencies import router as dependencies_router
 from api.routers.quick_scan import router as quick_scan_router
 from api.routers.report import router as report_router
 import json
@@ -100,6 +101,8 @@ app.include_router(dashboard_router)
 app.include_router(quick_scan_router)
 # 리포트 라우터 (GET /api/report/generate|download/{filename}|preview) — Wave 2-D 분리
 app.include_router(report_router)
+# 의존성 스캔 라우터 (GET /api/dependencies, POST /api/dependencies/scan) — Wave 2-E 분리
+app.include_router(dependencies_router)
 
 
 @app.get("/")
@@ -436,42 +439,8 @@ async def analyze_file(file: UploadFile = File(...), use_llm: bool = Form(True))
 # ============================================================
 # 의존성 취약점 분석 API
 # ============================================================
-
-class DependencyScanRequest(BaseModel):
-    requirements_text: str = ""      # requirements.txt 내용
-    package_json_text: str = ""      # package.json 내용
-    project_path: str = ""           # 프로젝트 경로 (서버 로컬)
-
-
-@app.post("/api/dependencies/scan", dependencies=[Depends(verify_api_key)])
-def scan_dependencies(req: DependencyScanRequest):
-    """의존성 취약점을 스캔합니다."""
-    from analyzer.dependency_scanner import DependencyScanner
-    scanner = DependencyScanner()
-
-    results = []
-    if req.requirements_text:
-        results.append(scanner.scan_requirements_text(req.requirements_text).to_dict())
-    elif req.package_json_text:
-        results.append(scanner.scan_package_json_text(req.package_json_text).to_dict())
-    elif req.project_path and os.path.exists(req.project_path):
-        results = [r.to_dict() for r in scanner.scan(req.project_path)]
-    else:
-        # 현재 프로젝트 스캔
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        results = [r.to_dict() for r in scanner.scan(project_root)]
-
-    return {"results": results}
-
-
-@app.get("/api/dependencies", dependencies=[Depends(verify_api_key)])
-def get_dependencies():
-    """현재 프로젝트의 의존성 스캔 결과를 반환합니다."""
-    from analyzer.dependency_scanner import DependencyScanner
-    scanner = DependencyScanner()
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    results = [r.to_dict() for r in scanner.scan(project_root)]
-    return {"results": results}
+# Wave 2-E: GET /api/dependencies, POST /api/dependencies/scan 는
+# api/routers/dependencies.py 로 이동되었다 (위 include_router 참조).
 
 
 # ============================================================
