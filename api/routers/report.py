@@ -9,9 +9,10 @@ Wave 2-D: 리포트 생성/다운로드/미리보기 엔드포인트를 server.p
   - GET /api/report/preview
 
 설계 메모:
-  - 데이터 로드 폴백은 api.result_sources.load_full_result 헬퍼를 재사용한다.
-  - 프로젝트 루트 산정도 api.result_sources.project_root 공유 헬퍼를 사용한다
-    (api/routers/dependencies.py 와 동일 경로 보장).
+  - 데이터 로드 / 의존성 스캔은 ``api.services.report_generation`` 으로
+    분리되었다 (Wave 2-R). 라우터는 서비스 함수를 호출하기만 한다.
+  - 다운로드 경로 산출은 ``api.result_sources.reports_path`` 헬퍼를 사용한다
+    (Wave 2-Q 동작 유지).
   - reports.report_generator 의존성은 본 모듈 안에서 lazy import 하여
     api 패키지 임포트 시 의존성이 끌려오지 않도록 한다.
   - api.server 를 import 하지 않아 순환 import 위험이 없다.
@@ -27,7 +28,7 @@ from fastapi.responses import FileResponse
 
 from api import result_sources
 from api.auth import verify_api_key
-from db import service as db_service
+from api.services import report_generation as report_service
 
 router = APIRouter()
 
@@ -42,29 +43,6 @@ def _safe_report_filename(filename: str) -> str:
     return filename.replace("/", "_").replace("\\", "_")
 
 
-def _load_report_data(session_id: Optional[str]) -> Optional[dict]:
-    """DB → JSON 폴백 순서로 분석 결과를 로드한다."""
-    if session_id:
-        data = db_service.get_analysis_by_session(session_id)
-    else:
-        data = db_service.get_latest_analysis()
-    if data:
-        return data
-    full = result_sources.load_full_result()
-    return full or None
-
-
-def _scan_dependencies_safely() -> Optional[dict]:
-    """의존성 스캔 결과(있으면). 실패해도 리포트 생성을 막지 않는다."""
-    try:
-        from analyzer.dependency_scanner import DependencyScanner
-
-        scanner = DependencyScanner()
-        return {"results": [r.to_dict() for r in scanner.scan(result_sources.project_root())]}
-    except Exception:
-        return None
-
-
 @router.get("/api/report/generate", dependencies=[Depends(verify_api_key)])
 def generate_report(
     fmt: str = Query("html", description="md, html, both"),
@@ -74,11 +52,11 @@ def generate_report(
     """분석 리포트를 생성하고 다운로드 경로를 반환합니다."""
     from reports.report_generator import ReportGenerator
 
-    data = _load_report_data(session_id)
+    data = report_service.load_report_data(session_id)
     if not data:
         return {"error": "분석 데이터가 없습니다. 먼저 코드 분석을 실행하세요."}
 
-    deps_data = _scan_dependencies_safely() if include_deps else None
+    deps_data = report_service.scan_dependencies_safely() if include_deps else None
 
     gen = ReportGenerator()
     result = gen.save_report(
@@ -115,11 +93,11 @@ def preview_report(
     """리포트를 생성하고 HTML 내용을 바로 반환합니다 (미리보기)."""
     from reports.report_generator import ReportGenerator
 
-    data = _load_report_data(session_id)
+    data = report_service.load_report_data(session_id)
     if not data:
         return {"error": "분석 데이터가 없습니다."}
 
-    deps_data = _scan_dependencies_safely() if include_deps else None
+    deps_data = report_service.scan_dependencies_safely() if include_deps else None
 
     gen = ReportGenerator()
     html = gen.generate_html(data, deps_data)
