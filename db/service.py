@@ -15,14 +15,14 @@ API 서버와 파이프라인에서 이 모듈을 호출합니다.
 
     # 세션 이력 조회
     sessions = get_all_sessions()
+
+Wave 2-J: ``sys.path.insert`` 부트스트랩 해킹 제거. 모든 호출 경로(uvicorn /
+celery / pytest / scripts) 가 프로젝트 루트를 cwd 또는 ``pythonpath`` 로 잡고
+있어 ``db.*`` / ``shared.*`` 임포트가 표준 패키지 탐색으로 해결된다.
 """
 
-import sys
-import os
 from datetime import datetime
 from typing import Optional
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db.models import SessionLocal, AnalysisRun, Vulnerability, Patch, init_db
 from shared.encryption import CodeEncryptor

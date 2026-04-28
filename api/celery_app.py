@@ -9,12 +9,14 @@ Redis를 broker/backend으로 사용하는 Celery 앱.
 환경변수:
     CELERY_BROKER_URL: Redis 브로커 URL (기본: redis://localhost:6379/0)
     CELERY_RESULT_BACKEND: Redis 결과 백엔드 URL (기본: redis://localhost:6379/1)
+
+Wave 2-J: ``sys.path.insert`` 부트스트랩 해킹 제거. ``celery -A api.celery_app``
+은 항상 프로젝트 루트(cwd)에서 실행되며, Python 은 cwd 를 자동으로 sys.path 에
+추가하므로 ``api.*`` / ``analyzer.*`` / ``db.*`` 임포트가 표준 패키지 탐색으로
+해결된다. pytest 환경에서는 pytest.ini 의 ``pythonpath = .`` 가 동일한 역할을 한다.
 """
 
 import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
 load_dotenv()

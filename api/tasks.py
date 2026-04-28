@@ -3,12 +3,12 @@ Celery 분석 태스크 (api/tasks.py)
 
 분석 파이프라인을 Celery task로 래핑합니다.
 실제 로직은 analyzer.pipeline.execute_pipeline()에 위임합니다.
+
+Wave 2-J: ``sys.path.insert`` 부트스트랩 해킹 제거.
+``celery -A api.celery_app`` (which loads ``api.tasks`` via ``include``) 는 항상
+프로젝트 루트에서 실행되므로, cwd 가 sys.path 에 자동 포함되어 ``analyzer.*`` /
+``api.*`` 임포트가 표준 패키지 탐색으로 해결된다.
 """
-
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from api.celery_app import celery_app
 

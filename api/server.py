@@ -2,7 +2,7 @@
 API 서버 (api/server.py) — FastAPI 앱 부트스트랩.
 
 이 파일은 다음만 담당한다 (얇은 부트스트랩):
-  1) 환경 로드(dotenv) 와 sys.path 안전망
+  1) 환경 로드(dotenv)
   2) FastAPI 앱/CORS 미들웨어/정적 자산 마운트
   3) DB 초기화(init_db) / 업로드 디렉터리 생성을 lifespan 으로 위임
   4) Wave 2 라우터 include
@@ -25,14 +25,7 @@ API 서버 (api/server.py) — FastAPI 앱 부트스트랩.
 """
 
 import os
-import sys
 from contextlib import asynccontextmanager
-
-# TODO(Wave 2 후속): pytest.ini 의 ``pythonpath = .`` 와 정상적인 패키지 임포트
-# 흐름이 모든 entrypoint(uvicorn, celery worker, 스크립트, ``python -m ...``)
-# 에서 검증된 후 제거 가능. 지금은 ``python api/server.py`` 직접 실행과의
-# 하위 호환을 위해 보존한다 (Wave 2-H 부트스트랩 정리 — bb1 참조).
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
 load_dotenv()
