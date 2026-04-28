@@ -8,24 +8,18 @@ React 대시보드가 이 API를 호출하여 데이터를 가져갑니다.
   uvicorn api.server:app --reload --port 8000
 """
 
-from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, Depends
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
-from api.auth import verify_api_key
-from api.dto.responses import AnalyzeStartResponse
-from api.result_sources import REPORTS_DIR
+from api.routers.analyze import router as analyze_router
 from api.routers.dashboard import router as dashboard_router
 from api.routers.dependencies import router as dependencies_router
 from api.routers.patch import router as patch_router
 from api.routers.quick_scan import router as quick_scan_router
 from api.routers.report import router as report_router
-import json
 import os
 import sys
-import uuid
-from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
@@ -58,29 +52,6 @@ init_db()
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# 분석 작업 상태 저장 (메모리 — Celery 미사용 시 fallback)
-analysis_jobs = {}
-
-# Celery 사용 가능 여부 감지
-_USE_CELERY = False
-try:
-    from api.celery_app import celery_app as _celery
-    from api.tasks import run_analysis_task
-    # Redis 연결 확인
-    _celery.connection_for_write().ensure_connection(max_retries=1, timeout=2)
-    _USE_CELERY = True
-except Exception:
-    _USE_CELERY = False
-
-
-class AnalyzeRequest(BaseModel):
-    code: str
-    filename: str = "uploaded_code.py"
-    use_llm: bool = True
-    multi_patch: bool = False
-    provider: str = "gemini"
-    model: str = "gemini-2.0-flash-lite"
-
 
 # ============================================================
 # API 엔드포인트
@@ -96,6 +67,9 @@ app.include_router(report_router)
 app.include_router(dependencies_router)
 # 패치 적용 라우터 (POST /api/apply-patch) — Wave 2-F 분리
 app.include_router(patch_router)
+# 분석/잡 라우터 (POST /api/analyze, GET /api/analyze/status/{task_id},
+#                GET /api/analyze/{job_id}, POST /api/analyze/file) — Wave 2-G 분리
+app.include_router(analyze_router)
 
 
 @app.get("/")
@@ -106,147 +80,9 @@ def root():
 # ============================================================
 # 코드 분석 실행 API
 # ============================================================
-
-def _run_analysis(job_id: str, code: str, filename: str, use_llm: bool, provider: str, model: str, multi_patch: bool = False):
-    """백그라운드에서 분석 파이프라인 실행 (analyzer.pipeline에 위임)"""
-    from analyzer.pipeline import execute_pipeline
-
-    analysis_jobs[job_id]["status"] = "analyzing"
-
-    def on_progress(step: str):
-        analysis_jobs[job_id]["step"] = step
-
-    try:
-        result = execute_pipeline(
-            job_id=job_id, code=code, filename=filename,
-            use_llm=use_llm, provider=provider, model=model,
-            multi_patch=multi_patch, on_progress=on_progress,
-        )
-
-        analysis_jobs[job_id]["language"] = result.language
-        if result.llm_error:
-            analysis_jobs[job_id]["llm_error"] = result.llm_error
-        if result.db_error:
-            analysis_jobs[job_id]["db_error"] = result.db_error
-
-        result_data = result.result_data
-
-        # JSON 파일로 저장 (server 전용 — Celery task에서는 생략)
-        os.makedirs(REPORTS_DIR, exist_ok=True)
-        with open(os.path.join(REPORTS_DIR, "full_result.json"), "w", encoding="utf-8") as f:
-            json.dump(result_data, f, indent=2, ensure_ascii=False)
-
-        # 리포트 자동 생성 (server 전용)
-        analysis_jobs[job_id]["step"] = "리포트 생성 중..."
-        try:
-            from reports.report_generator import ReportGenerator
-            report_gen = ReportGenerator()
-            report_files = report_gen.save_report(result_data, output_dir=REPORTS_DIR, fmt="both")
-            analysis_jobs[job_id]["report_files"] = {
-                k: f"/api/report/download/{os.path.basename(v)}"
-                for k, v in report_files.items()
-            }
-        except Exception as e:
-            analysis_jobs[job_id]["report_error"] = str(e)
-
-        analysis_jobs[job_id]["status"] = "completed"
-        analysis_jobs[job_id]["result"] = result_data
-        analysis_jobs[job_id]["step"] = "완료"
-
-    except Exception as e:
-        analysis_jobs[job_id]["status"] = "failed"
-        analysis_jobs[job_id]["error"] = str(e)
-        analysis_jobs[job_id]["step"] = f"오류: {str(e)}"
-
-
-@app.post("/api/analyze", response_model=AnalyzeStartResponse, response_model_exclude_unset=True, dependencies=[Depends(verify_api_key)])
-def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
-    """코드를 제출하여 분석을 시작합니다. Celery 사용 가능 시 task로 제출."""
-    if _USE_CELERY:
-        # Celery task로 제출
-        task = run_analysis_task.delay(
-            code=req.code, filename=req.filename,
-            use_llm=req.use_llm, provider=req.provider,
-            model=req.model, multi_patch=req.multi_patch,
-        )
-        return {"job_id": task.id, "status": "queued", "message": "분석이 시작되었습니다. (Celery)", "backend": "celery"}
-
-    # Celery 미사용 fallback — 기존 메모리 방식
-    job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-
-    analysis_jobs[job_id] = {
-        "job_id": job_id,
-        "status": "queued",
-        "step": "대기 중...",
-        "filename": req.filename,
-        "code_length": len(req.code),
-        "use_llm": req.use_llm,
-        "created_at": datetime.now().isoformat(),
-        "result": None,
-        "error": None,
-    }
-
-    background_tasks.add_task(
-        _run_analysis, job_id, req.code, req.filename,
-        req.use_llm, req.provider, req.model, req.multi_patch,
-    )
-
-    return {"job_id": job_id, "status": "queued", "message": "분석이 시작되었습니다.", "backend": "memory"}
-
-
-@app.get("/api/analyze/status/{task_id}", dependencies=[Depends(verify_api_key)])
-def get_celery_task_status(task_id: str):
-    """Celery task 상태를 조회합니다. (AsyncResult 기반)"""
-    if not _USE_CELERY:
-        return {"error": "Celery가 활성화되어 있지 않습니다."}
-
-    from celery.result import AsyncResult
-    result = AsyncResult(task_id, app=_celery)
-
-    response = {
-        "task_id": task_id,
-        "status": result.state,  # PENDING / STARTED / PROGRESS / SUCCESS / FAILURE
-    }
-
-    if result.state == "PROGRESS":
-        response.update(result.info or {})
-    elif result.state == "SUCCESS":
-        response["result"] = result.result
-    elif result.state == "FAILURE":
-        response["error"] = str(result.result)
-
-    return response
-
-
-@app.get("/api/analyze/{job_id}", dependencies=[Depends(verify_api_key)])
-def get_analysis_status(job_id: str):
-    """분석 작업 상태를 조회합니다. (메모리 방식 + Celery 자동 감지)"""
-    # 메모리에서 먼저 조회
-    job = analysis_jobs.get(job_id)
-    if job:
-        return job
-
-    # Celery에서 조회 시도
-    if _USE_CELERY:
-        from celery.result import AsyncResult
-        result = AsyncResult(job_id, app=_celery)
-        if result.state != "PENDING":
-            response = {
-                "job_id": job_id,
-                "status": result.state.lower(),
-                "step": "완료" if result.state == "SUCCESS" else result.state,
-            }
-            if result.state == "PROGRESS":
-                response.update(result.info or {})
-            elif result.state == "SUCCESS":
-                response["result"] = result.result.get("result") if isinstance(result.result, dict) else None
-                response["status"] = result.result.get("status", "completed") if isinstance(result.result, dict) else "completed"
-            elif result.state == "FAILURE":
-                response["error"] = str(result.result)
-                response["status"] = "failed"
-            return response
-
-    return {"error": "Job not found"}
+# Wave 2-G: POST /api/analyze, GET /api/analyze/status/{task_id},
+# GET /api/analyze/{job_id}, POST /api/analyze/file 는
+# api/routers/analyze.py 로 이동되었다 (위 include_router 참조).
 
 
 # ============================================================
@@ -254,29 +90,6 @@ def get_analysis_status(job_id: str):
 # ============================================================
 # Wave 2-F: POST /api/apply-patch 는 api/routers/patch.py 로 이동되었다
 # (위 include_router 참조).
-
-
-@app.post("/api/analyze/file", dependencies=[Depends(verify_api_key)])
-async def analyze_file(file: UploadFile = File(...), use_llm: bool = Form(True)):
-    """파일을 업로드하여 분석합니다."""
-    content = await file.read()
-    code = content.decode("utf-8")
-
-    req = AnalyzeRequest(code=code, filename=file.filename or "uploaded.py", use_llm=use_llm)
-
-    # 동기 실행 (파일 업로드는 즉시 결과 반환)
-    job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    analysis_jobs[job_id] = {
-        "job_id": job_id, "status": "queued", "step": "시작",
-        "filename": req.filename, "created_at": datetime.now().isoformat(),
-        "result": None, "error": None,
-    }
-
-    from threading import Thread
-    t = Thread(target=_run_analysis, args=(job_id, req.code, req.filename, req.use_llm, req.provider, req.model))
-    t.start()
-
-    return {"job_id": job_id, "status": "queued"}
 
 
 # ============================================================
