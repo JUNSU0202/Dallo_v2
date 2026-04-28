@@ -146,7 +146,7 @@ class TestFreshImportDoesNotLoadCelery:
             f"subprocess import 실패\nstdout={proc.stdout}\nstderr={proc.stderr}"
         )
         out = proc.stdout.strip().splitlines()[-1]
-        loaded = eval(out)  # noqa: S307 — 우리 자식 스크립트의 print 출력
+        loaded = ast.literal_eval(out)
         assert loaded["api.celery_app"] is False, (
             "fresh import 시 api.celery_app 이 sys.modules 에 로드됨 — "
             "여전히 모듈 top-level 임포트가 남아 있다"
