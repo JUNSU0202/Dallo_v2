@@ -24,8 +24,8 @@ os.environ["DALLO_API_KEYS"] = "test-api-key"
 os.environ.setdefault("DALLO_ENCRYPTION_KEY", "test-key")
 
 from fastapi.testclient import TestClient
-from api import server as api_server
 from api import result_sources
+from api.routers import analyze as analyze_router
 from api.server import app
 from db import service as db_service
 from db.models import SessionLocal, AnalysisRun, Vulnerability, Patch
@@ -466,7 +466,8 @@ class TestAnalyzeContract:
         백그라운드 분석 함수를 노옵으로 대체합니다.
         """
         # 백그라운드에서 실제 정적 분석 파이프라인이 실행되는 것을 막음
-        monkeypatch.setattr(api_server, "_run_analysis", lambda *a, **kw: None)
+        # (Wave 2-G 에서 _run_analysis 가 api/routers/analyze.py 로 이동)
+        monkeypatch.setattr(analyze_router, "_run_analysis", lambda *a, **kw: None)
 
         payload = {
             "code": "print('hello')\n",
