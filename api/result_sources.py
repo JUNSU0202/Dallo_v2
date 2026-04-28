@@ -11,6 +11,16 @@ import os
 REPORTS_DIR = "reports"
 
 
+def project_root() -> str:
+    """레포지토리 루트 경로 (api/ 의 부모).
+
+    의존성 스캐너가 현재 프로젝트를 스캔할 때 사용한다. 라우터들은
+    파일 위치(api/routers/*.py)에 따라 상대 경로 계산이 달라지므로,
+    한 곳에서 공유 헬퍼로 노출하여 일관성을 보장한다.
+    """
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def load_bandit_report() -> dict:
     """Bandit 리포트 로드 (없으면 빈 셰이프 반환)."""
     path = os.path.join(REPORTS_DIR, "bandit_report.json")
