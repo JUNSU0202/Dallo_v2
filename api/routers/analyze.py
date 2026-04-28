@@ -45,9 +45,9 @@ from threading import Thread
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
 from pydantic import BaseModel
 
+from api import result_sources
 from api.auth import verify_api_key
 from api.dto.responses import AnalyzeStartResponse
-from api.result_sources import REPORTS_DIR
 
 router = APIRouter()
 
@@ -137,9 +137,13 @@ def _run_analysis(
 
         result_data = result.result_data
 
+        # 호출 시점에 ``result_sources.REPORTS_DIR`` 을 다시 읽는다.
+        # 모듈 임포트 시점에 이름으로 박제하면 monkeypatch 가 반영되지 않는다.
+        reports_dir = result_sources.REPORTS_DIR
+
         # JSON 파일로 저장 (server 전용 — Celery task에서는 생략)
-        os.makedirs(REPORTS_DIR, exist_ok=True)
-        with open(os.path.join(REPORTS_DIR, "full_result.json"), "w", encoding="utf-8") as f:
+        os.makedirs(reports_dir, exist_ok=True)
+        with open(os.path.join(reports_dir, "full_result.json"), "w", encoding="utf-8") as f:
             json.dump(result_data, f, indent=2, ensure_ascii=False)
 
         # 리포트 자동 생성 (server 전용)
@@ -147,7 +151,7 @@ def _run_analysis(
         try:
             from reports.report_generator import ReportGenerator
             report_gen = ReportGenerator()
-            report_files = report_gen.save_report(result_data, output_dir=REPORTS_DIR, fmt="both")
+            report_files = report_gen.save_report(result_data, output_dir=reports_dir, fmt="both")
             analysis_jobs[job_id]["report_files"] = {
                 k: f"/api/report/download/{os.path.basename(v)}"
                 for k, v in report_files.items()

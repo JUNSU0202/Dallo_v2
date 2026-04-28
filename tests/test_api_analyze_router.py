@@ -305,3 +305,168 @@ class TestRouterImportSurface:
         assert hasattr(analyze_router, "_run_analysis")
         assert hasattr(analyze_router, "analysis_jobs")
         assert hasattr(analyze_router, "_USE_CELERY")
+
+
+# ============================================================
+# Wave 2-P — REPORTS_DIR 늦은 바인딩 (late binding)
+# ============================================================
+
+class TestReportsDirLateBinding:
+    """``api.routers.analyze`` 가 ``REPORTS_DIR`` 을 모듈 임포트 시점에
+    이름으로 끌어와 박제(early-bind)하지 않고, 호출 시점에
+    ``api.result_sources.REPORTS_DIR`` 을 동적으로 참조해야 한다.
+
+    회귀 시나리오:
+      - 테스트가 ``monkeypatch.setattr(result_sources, 'REPORTS_DIR', tmp)`` 로
+        디렉터리를 격리해도, ``analyze.py`` 가 임포트 시점에 박제한 원래
+        REPORTS_DIR 로 ``full_result.json`` 을 쓰면 격리가 깨진다.
+      - 늦은 바인딩으로 전환되면 monkeypatch 가 그대로 반영되어, 분석 결과
+        파일 / 리포트 출력이 모두 tmp 디렉터리로 향한다.
+    """
+
+    def test_analyze_does_not_import_reports_dir_name_directly(self):
+        """모듈 top-level 에 ``from api.result_sources import REPORTS_DIR`` 이
+        없어야 한다 (이름 박제 금지). 모듈/패키지 import 는 허용 — 호출 시점에
+        동적으로 ``result_sources.REPORTS_DIR`` 을 본다.
+        """
+        import ast
+        import inspect
+
+        import api.routers.analyze as mod
+
+        tree = ast.parse(inspect.getsource(mod))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.module == "api.result_sources":
+                    for alias in node.names:
+                        assert alias.name != "REPORTS_DIR", (
+                            "REPORTS_DIR 를 from-import 로 박제하면 monkeypatch 가 "
+                            "반영되지 않는다 — 모듈 참조로 늦게 바인딩하라"
+                        )
+
+    def test_run_analysis_writes_to_monkeypatched_reports_dir(
+        self, tmp_path, monkeypatch, isolated_jobs,
+    ):
+        """``_run_analysis`` 가 ``result_sources.REPORTS_DIR`` 을 호출 시점에
+        다시 읽어, monkeypatch 된 tmp 경로로 ``full_result.json`` 과 리포트를
+        써야 한다.
+        """
+        from api import result_sources
+
+        # 격리된 reports 디렉터리 — 실제 repo 의 reports/ 는 절대 건드리지 않는다.
+        tmp_reports = tmp_path / "reports"
+        # mkdir 은 _run_analysis 안의 os.makedirs(exist_ok=True) 가 처리하므로 생략
+        monkeypatch.setattr(result_sources, "REPORTS_DIR", str(tmp_reports))
+
+        # execute_pipeline 페이크 — 네트워크/LLM 절대 호출 금지
+        fake_result_data = {
+            "session_id": "fake-session",
+            "summary": {"total": 0, "high": 0, "medium": 0, "low": 0,
+                        "patches_generated": 0, "patches_verified": 0},
+            "vulnerabilities": [],
+            "patches": [],
+        }
+
+        class _FakePipelineResult:
+            def __init__(self):
+                self.language = "python"
+                self.llm_error = None
+                self.db_error = None
+                self.result_data = fake_result_data
+
+        def _fake_execute_pipeline(*a, **kw):
+            return _FakePipelineResult()
+
+        import analyzer.pipeline as pipeline_mod
+        monkeypatch.setattr(pipeline_mod, "execute_pipeline", _fake_execute_pipeline)
+
+        # ReportGenerator 페이크 — output_dir 을 캡처 + 가짜 파일 작성
+        seen_output_dirs: list[str] = []
+
+        class _FakeReportGenerator:
+            def save_report(self, data, output_dir, fmt="both", include_deps=True):
+                seen_output_dirs.append(output_dir)
+                os.makedirs(output_dir, exist_ok=True)
+                html_path = os.path.join(output_dir, "report.html")
+                md_path = os.path.join(output_dir, "report.md")
+                with open(html_path, "w", encoding="utf-8") as fh:
+                    fh.write("<html></html>")
+                with open(md_path, "w", encoding="utf-8") as fm:
+                    fm.write("# fake")
+                return {"html": html_path, "md": md_path}
+
+        import reports.report_generator as rg_mod
+        monkeypatch.setattr(rg_mod, "ReportGenerator", _FakeReportGenerator)
+
+        # 호출 전, 기본 repo REPORTS_DIR 의 full_result.json 스냅샷.
+        # (있다면 mtime/내용을 기억해, 호출 후 변하지 않았음을 확인한다.)
+        default_full = os.path.join(
+            result_sources.project_root(), "reports", "full_result.json",
+        )
+        default_existed = os.path.exists(default_full)
+        default_pre_mtime = os.path.getmtime(default_full) if default_existed else None
+        default_pre_bytes = (
+            open(default_full, "rb").read() if default_existed else None
+        )
+
+        # 잡 메모리 시드
+        job_id = "job_late_bind_test"
+        isolated_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "step": "대기",
+            "filename": "x.py",
+            "code_length": 0,
+            "use_llm": False,
+            "created_at": "2026-04-29T00:00:00",
+            "result": None,
+            "error": None,
+        }
+
+        # 호출 — 동기 실행
+        analyze_router._run_analysis(
+            job_id=job_id, code="print(1)\n", filename="x.py",
+            use_llm=False, provider="gemini", model="gemini-2.0-flash-lite",
+            multi_patch=False,
+        )
+
+        # 잡 상태가 completed 로 끝나야 한다 (실패 시 error 키에 단서가 남는다)
+        meta = isolated_jobs[job_id]
+        assert meta.get("error") is None, (
+            f"_run_analysis 가 예외를 삼켰다: {meta.get('error')}"
+        )
+        assert meta["status"] == "completed", meta
+
+        # full_result.json 이 monkeypatched tmp_reports 안에 있어야 한다
+        full_path = tmp_reports / "full_result.json"
+        assert full_path.exists(), (
+            f"full_result.json 가 monkeypatched REPORTS_DIR 에 없음 — "
+            f"early-bind REPORTS_DIR 사용 의심. tmp_reports={tmp_reports}"
+        )
+        import json as _json
+        loaded = _json.loads(full_path.read_text(encoding="utf-8"))
+        assert loaded == fake_result_data
+
+        # ReportGenerator.save_report 가 monkeypatched 경로로 호출되어야 한다
+        assert seen_output_dirs == [str(tmp_reports)], (
+            f"ReportGenerator 가 잘못된 output_dir 로 호출됨: {seen_output_dirs}"
+        )
+
+        # 기본 repo reports 경로의 full_result.json 이 이번 호출로 인해
+        # 변경되지 않았는지 확인. 호출 이전 스냅샷(존재 여부/mtime/바이트) 과
+        # 비교하여 안전하게 검증한다 — 파일을 삭제하지 않는다.
+        default_now_exists = os.path.exists(default_full)
+        if default_existed:
+            assert default_now_exists, (
+                "호출 전 존재하던 기본 reports/full_result.json 이 사라졌다"
+            )
+            default_post_bytes = open(default_full, "rb").read()
+            assert default_post_bytes == default_pre_bytes, (
+                "기본 repo reports/full_result.json 의 내용이 이번 호출로 인해 변경됨 — "
+                "monkeypatch 가 무시되었다 (early-bind REPORTS_DIR 사용 의심)"
+            )
+        else:
+            assert not default_now_exists, (
+                "호출 전 부재하던 기본 reports/full_result.json 이 새로 쓰임 — "
+                "monkeypatch 가 무시되었다 (early-bind REPORTS_DIR 사용)"
+            )
