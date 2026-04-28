@@ -25,6 +25,7 @@ os.environ.setdefault("DALLO_ENCRYPTION_KEY", "test-key")
 
 from fastapi.testclient import TestClient
 from api import server as api_server
+from api import result_sources
 from api.server import app
 from db import service as db_service
 from db.models import SessionLocal, AnalysisRun, Vulnerability, Patch
@@ -108,8 +109,12 @@ def full_result_data():
 
 @pytest.fixture
 def patched_full_result(monkeypatch, full_result_data):
-    """api.server.load_full_result를 합성 데이터로 모킹."""
-    monkeypatch.setattr(api_server, "load_full_result", lambda: full_result_data)
+    """api.result_sources.load_full_result를 합성 데이터로 모킹.
+
+    Wave 2-B에서 헬퍼가 api.result_sources 로 이동하여 라우터가 해당
+    모듈을 참조하므로 패치 대상도 동일 모듈로 옮긴다.
+    """
+    monkeypatch.setattr(result_sources, "load_full_result", lambda: full_result_data)
     return full_result_data
 
 
@@ -386,9 +391,9 @@ class TestUnsetFieldExclusionRegression:
             },
         )
         # full_result.json / bandit_report.json 폴백도 빈 상태로 강제
-        monkeypatch.setattr(api_server, "load_full_result", lambda: {})
+        monkeypatch.setattr(result_sources, "load_full_result", lambda: {})
         monkeypatch.setattr(
-            api_server, "load_bandit_report",
+            result_sources, "load_bandit_report",
             lambda: {"results": [], "metrics": {"_totals": {}}},
         )
 
@@ -416,9 +421,9 @@ class TestUnsetFieldExclusionRegression:
         function_code를 None으로 채워 넣어 키가 새로 생기면 안 된다.
         """
         # full_result는 비워서 bandit fallback 경로를 강제
-        monkeypatch.setattr(api_server, "load_full_result", lambda: {})
+        monkeypatch.setattr(result_sources, "load_full_result", lambda: {})
         monkeypatch.setattr(
-            api_server, "load_bandit_report",
+            result_sources, "load_bandit_report",
             lambda: {
                 "results": [
                     {
