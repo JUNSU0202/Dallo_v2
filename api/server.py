@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 from api.auth import verify_api_key
 from api.dto.responses import AnalyzeStartResponse
 from api.result_sources import (
@@ -22,11 +22,10 @@ from api.result_sources import (
     load_full_result,
 )
 from api.routers.dashboard import router as dashboard_router
+from api.routers.quick_scan import router as quick_scan_router
 import json
-import re
 import os
 import sys
-import time
 import uuid
 from datetime import datetime
 
@@ -95,274 +94,19 @@ class ApplyPatchRequest(BaseModel):
     github_token: str = ""    # 사용자의 GitHub 토큰
 
 
-class QuickScanRequest(BaseModel):
-    code: str
-    language: str = "python"
-
-
-# ============================================================
-# 빠른 스캔 (정규식 기반, 프로세스 실행 없이 즉시 응답)
-# ============================================================
-
-QUICK_SCAN_RULES = [
-    # SQL Injection
-    {
-        "id": "QS-SQL-INJECT",
-        "title": "SQL Injection 가능성",
-        "severity": "HIGH",
-        "cwe": "CWE-89",
-        "patterns": [
-            r'f"[^"]*(?:SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER)\b[^"]*\{',
-            r"f'[^']*(?:SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER)\b[^']*\{",
-            r'["\'].*(?:SELECT|INSERT|UPDATE|DELETE)\b.*["\']\s*\+',
-            r'\.format\(.*\).*(?:execute|query)',
-            r'%s.*(?:execute|query)|(?:execute|query).*%\s',
-            r'(?:executeQuery|executeUpdate|execute)\([^)]*\+',
-            r'(?:query|exec)\([^)]*\+\s*(?:req\.|user)',
-            r'"\s*\+\s*\w+\s*\+\s*".*(?:SELECT|INSERT|UPDATE|DELETE|WHERE)',
-        ],
-        "languages": ["python", "java", "javascript", "go", "php", "ruby"],
-        "message": "사용자 입력이 SQL 쿼리에 직접 삽입될 수 있습니다. 파라미터 바인딩을 사용하세요.",
-    },
-    # Command Injection
-    {
-        "id": "QS-CMD-INJECT",
-        "title": "Command Injection 가능성",
-        "severity": "HIGH",
-        "cwe": "CWE-78",
-        "patterns": [
-            r'os\.system\s*\(\s*f["\']',
-            r'os\.system\s*\([^)]*\+',
-            r'os\.popen\s*\(\s*f["\']',
-            r'subprocess\.(?:call|run|Popen)\s*\(\s*f["\']',
-            r'subprocess\.(?:call|run|Popen)\s*\([^)]*shell\s*=\s*True',
-            r'Runtime\.getRuntime\(\)\.exec\s*\([^)]*\+',
-            r'exec\s*\(\s*["\'][^"\']*["\']\s*\+',
-            r'child_process.*exec\s*\([^)]*\+',
-        ],
-        "languages": ["python", "java", "javascript", "go", "c", "cpp"],
-        "message": "외부 명령어에 사용자 입력이 삽입될 수 있습니다. shlex.quote() 또는 허용 목록을 사용하세요.",
-    },
-    # Hardcoded Secrets
-    {
-        "id": "QS-HARDCODED-SECRET",
-        "title": "하드코딩된 인증 정보",
-        "severity": "HIGH",
-        "cwe": "CWE-798",
-        "patterns": [
-            r'(?:API_KEY|API_SECRET|SECRET_KEY|ACCESS_KEY|PRIVATE_KEY)\s*=\s*["\'][^"\']{8,}["\']',
-            r'(?:password|passwd|pwd)\s*=\s*["\'][^"\']{4,}["\']',
-            r'(?:token|TOKEN)\s*=\s*["\'][^"\']{8,}["\']',
-            r'(?:sk-|ghp_|gho_|AIzaSy|AKIA)[A-Za-z0-9_\-]{10,}',
-            r'(?:DB_PASSWORD|DATABASE_PASSWORD|MYSQL_PASSWORD)\s*=\s*["\'][^"\']+["\']',
-        ],
-        "languages": ["python", "java", "javascript", "go", "c", "cpp", "ruby", "php", "kotlin", "rust"],
-        "message": "인증 정보가 소스코드에 하드코딩되어 있습니다. 환경변수나 시크릿 매니저를 사용하세요.",
-    },
-    # Weak Hashing
-    {
-        "id": "QS-WEAK-HASH",
-        "title": "취약한 해시 알고리즘",
-        "severity": "MEDIUM",
-        "cwe": "CWE-328",
-        "patterns": [
-            r'hashlib\.(?:md5|sha1)\s*\(',
-            r'MessageDigest\.getInstance\s*\(\s*["\'](?:MD5|SHA-1|SHA1)["\']',
-            r'crypto\.create(?:Hash|Hmac)\s*\(\s*["\'](?:md5|sha1)["\']',
-            r'MD5\.Create\(\)',
-            r'Digest::(?:MD5|SHA1)',
-        ],
-        "languages": ["python", "java", "javascript", "ruby", "go", "cpp"],
-        "message": "MD5/SHA1은 보안 용도에 부적합합니다. SHA-256 이상 또는 bcrypt/argon2를 사용하세요.",
-    },
-    # XSS
-    {
-        "id": "QS-XSS",
-        "title": "XSS (Cross-Site Scripting) 가능성",
-        "severity": "HIGH",
-        "cwe": "CWE-79",
-        "patterns": [
-            r'res\.send\s*\(\s*["\']<[^>]*["\']\s*\+',
-            r'document\.write\s*\(',
-            r'\.innerHTML\s*=\s*(?![\s]*["\']<)',
-            r'v-html\s*=',
-            r'dangerouslySetInnerHTML',
-            r'\.write\s*\(\s*["\']<.*\+',
-        ],
-        "languages": ["javascript", "python", "java", "php", "ruby"],
-        "message": "사용자 입력이 HTML에 직접 삽입될 수 있습니다. 이스케이프 처리를 적용하세요.",
-    },
-    # Insecure Deserialization
-    {
-        "id": "QS-UNSAFE-DESERIAL",
-        "title": "안전하지 않은 역직렬화",
-        "severity": "HIGH",
-        "cwe": "CWE-502",
-        "patterns": [
-            r'pickle\.loads?\s*\(',
-            r'yaml\.load\s*\([^)]*(?!Loader)',
-            r'eval\s*\(\s*(?:request|req|input|user)',
-            r'unserialize\s*\(\s*\$',
-            r'Marshal\.load\s*\(',
-        ],
-        "languages": ["python", "java", "javascript", "php", "ruby"],
-        "message": "신뢰할 수 없는 데이터의 역직렬화는 원격 코드 실행으로 이어질 수 있습니다.",
-    },
-    # Path Traversal
-    {
-        "id": "QS-PATH-TRAVERSAL",
-        "title": "경로 탐색 취약점",
-        "severity": "MEDIUM",
-        "cwe": "CWE-22",
-        "patterns": [
-            r'open\s*\(\s*(?:f["\']|.*\+|.*format|.*%)',
-            r'os\.path\.join\s*\([^)]*(?:request|req|input|user)',
-            r'readFile(?:Sync)?\s*\([^)]*(?:req\.|user)',
-            r'new\s+File\s*\([^)]*\+',
-        ],
-        "languages": ["python", "java", "javascript", "go", "php"],
-        "message": "사용자 입력이 파일 경로에 사용되면 경로 탐색 공격이 가능합니다.",
-    },
-    # Insecure Random
-    {
-        "id": "QS-INSECURE-RANDOM",
-        "title": "보안에 부적합한 난수 생성",
-        "severity": "LOW",
-        "cwe": "CWE-330",
-        "patterns": [
-            r'random\.random\s*\(',
-            r'random\.randint\s*\(',
-            r'Math\.random\s*\(',
-            r'java\.util\.Random\b',
-            r'rand\s*\(\s*\)',
-        ],
-        "languages": ["python", "java", "javascript", "c", "cpp", "go"],
-        "message": "보안 목적(토큰, 키 생성)에는 secrets 모듈이나 crypto.randomBytes를 사용하세요.",
-    },
-]
-
-
-def _detect_language(filename: str) -> str:
-    ext_map = {
-        ".py": "python", ".java": "java", ".js": "javascript", ".jsx": "javascript",
-        ".ts": "javascript", ".tsx": "javascript", ".go": "go", ".c": "c",
-        ".cpp": "cpp", ".h": "c", ".hpp": "cpp", ".rb": "ruby", ".php": "php",
-        ".kt": "kotlin", ".rs": "rust", ".cs": "csharp",
-    }
-    _, ext = os.path.splitext(filename.lower())
-    return ext_map.get(ext, "python")
-
-
-def _quick_scan(code: str, language: str) -> list:
-    """정규식 기반 빠른 취약점 스캔 (밀리초 단위 응답)"""
-    findings = []
-    lines = code.split("\n")
-
-    for rule in QUICK_SCAN_RULES:
-        if language not in rule["languages"]:
-            continue
-        for pattern in rule["patterns"]:
-            try:
-                regex = re.compile(pattern, re.IGNORECASE)
-                for line_num, line_text in enumerate(lines, 1):
-                    if regex.search(line_text):
-                        # 같은 룰이 같은 라인에 중복 탐지되지 않도록
-                        already = any(
-                            f["rule_id"] == rule["id"] and f["line"] == line_num
-                            for f in findings
-                        )
-                        if not already:
-                            findings.append({
-                                "rule_id": rule["id"],
-                                "title": rule["title"],
-                                "severity": rule["severity"],
-                                "cwe": rule["cwe"],
-                                "line": line_num,
-                                "code": line_text.strip(),
-                                "message": rule["message"],
-                            })
-            except re.error:
-                continue
-
-    findings.sort(key=lambda f: f["line"])
-    return findings
-
-
-@app.post("/api/quick-scan", dependencies=[Depends(verify_api_key)])
-def quick_scan(req: QuickScanRequest):
-    """정규식 기반 빠른 스캔 — 프로세스 실행 없이 밀리초 단위 응답"""
-    language = req.language or "python"
-    start = time.time()
-    findings = _quick_scan(req.code, language)
-    elapsed_ms = round((time.time() - start) * 1000, 1)
-    return {
-        "findings": findings,
-        "count": len(findings),
-        "elapsed_ms": elapsed_ms,
-        "scan_type": "quick",
-    }
-
-
-class ProjectScanRequest(BaseModel):
-    files: List[dict]  # [{"path": "src/app.py", "code": "..."}]
-
-
-@app.post("/api/quick-scan-project", dependencies=[Depends(verify_api_key)])
-def quick_scan_project(req: ProjectScanRequest):
-    """프로젝트 전체 빠른 스캔 — 여러 파일을 한 번에 분석"""
-    start = time.time()
-    file_results = []
-    total_findings = 0
-    summary = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
-
-    for f in req.files:
-        fpath = f.get("path", "unknown")
-        code = f.get("code", "")
-        lang = _detect_language(fpath)
-        findings = _quick_scan(code, lang)
-        for finding in findings:
-            summary[finding["severity"]] = summary.get(finding["severity"], 0) + 1
-        total_findings += len(findings)
-        file_results.append({
-            "path": fpath,
-            "language": lang,
-            "findings": findings,
-            "count": len(findings),
-        })
-
-    # 취약점 많은 파일 순으로 정렬
-    file_results.sort(key=lambda x: x["count"], reverse=True)
-    elapsed_ms = round((time.time() - start) * 1000, 1)
-
-    return {
-        "files": file_results,
-        "total_files": len(file_results),
-        "total_findings": total_findings,
-        "summary": summary,
-        "elapsed_ms": elapsed_ms,
-    }
-
-
 # ============================================================
 # API 엔드포인트
 # ============================================================
 
 # 조회 전용 라우터 (대시보드/통계/취약점/패치/세션 GET) — Wave 2-B 분리
 app.include_router(dashboard_router)
+# 빠른 스캔 라우터 (POST /api/quick-scan, /api/quick-scan-project) — Wave 2-C 분리
+app.include_router(quick_scan_router)
 
 
 @app.get("/")
 def root():
     return {"message": "Dallo DevSecOps API", "version": "1.0.0"}
-
-
-@app.get("/api/sessions/{session_id}", dependencies=[Depends(verify_api_key)])
-def get_session_detail(session_id: str):
-    """특정 세션 상세 조회"""
-    result = db_service.get_analysis_by_session(session_id)
-    if not result:
-        return {"error": "Session not found"}
-    return result
 
 
 # ============================================================

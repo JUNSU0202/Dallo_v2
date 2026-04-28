@@ -10,6 +10,7 @@ Wave 2-B: 부수효과 없는 GET 엔드포인트만 server.py 에서 분리.
   - GET /api/vulnerabilities/by-type
   - GET /api/patches
   - GET /api/sessions
+  - GET /api/sessions/{session_id}   (Wave 2-C)
 """
 
 from typing import Optional
@@ -204,3 +205,19 @@ def get_sessions():
     """분석 세션 이력 (DB)"""
     sessions = db_service.get_all_sessions()
     return {"count": len(sessions), "sessions": sessions}
+
+
+@router.get(
+    "/api/sessions/{session_id}",
+    dependencies=[Depends(verify_api_key)],
+)
+def get_session_detail(session_id: str):
+    """특정 세션 상세 조회.
+
+    Wave 2-C: server.py 에서 이동. 전용 DTO 가 아직 없어 response_model 은
+    의도적으로 두지 않는다 — 핸들러가 반환하는 dict 셰이프를 그대로 노출한다.
+    """
+    result = db_service.get_analysis_by_session(session_id)
+    if not result:
+        return {"error": "Session not found"}
+    return result
