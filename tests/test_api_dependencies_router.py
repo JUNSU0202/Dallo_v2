@@ -164,16 +164,38 @@ class TestPostDependenciesScan:
         assert fake_scanner.calls["scan"] == []
         assert fake_scanner.calls["scan_requirements_text"] == []
 
-    def test_project_path_branch(self, fake_scanner, tmp_path):
-        # 존재하는 경로만 사용해야 분기로 들어감 (라우터 내부 os.path.exists 검사)
-        target = tmp_path / "proj"
-        target.mkdir()
-        payload = {"project_path": str(target)}
+    def test_project_path_branch(self, fake_scanner):
+        """allowed root(=project_root) 내부의 기존 경로는 그대로 스캐너에 전달."""
+        import os
+
+        target = os.path.join(result_sources.project_root(), "api")
+        payload = {"project_path": target}
         r = client.post("/api/dependencies/scan", json=payload, headers=_AUTH_HEADERS)
         assert r.status_code == 200
         data = r.json()
         assert set(data.keys()) == self.REQUIRED_TOP
-        assert fake_scanner.calls["scan"] == [str(target)]
+        # 정규화된 절대 경로가 전달된다.
+        assert fake_scanner.calls["scan"] == [os.path.realpath(target)]
+
+    def test_project_path_outside_root_is_rejected(self, fake_scanner, tmp_path):
+        """프로젝트 루트 바깥의 임의 경로는 스캐너에 전달되지 않고
+        안전한 에러 결과 dict 가 응답으로 반환된다 (Wave 2-N 보안 가드)."""
+        outside = tmp_path / "evil"
+        outside.mkdir()
+        payload = {"project_path": str(outside)}
+        r = client.post("/api/dependencies/scan", json=payload, headers=_AUTH_HEADERS)
+        assert r.status_code == 200
+        data = r.json()
+        assert set(data.keys()) == self.REQUIRED_TOP
+        # 외부 스캐너가 실행되어선 안 된다.
+        assert fake_scanner.calls["scan"] == []
+        assert len(data["results"]) == 1
+        item = data["results"][0]
+        assert item["tool"] == "none"
+        assert item["project_path"] == ""
+        assert item["vulnerabilities"] == []
+        assert item["packages"] == []
+        assert item["error"] and "project_path" in item["error"]
 
     def test_default_to_project_root(self, fake_scanner):
         """모든 입력이 비어 있으면 현재 프로젝트(project_root) 를 스캔."""
