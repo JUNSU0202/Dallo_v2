@@ -247,6 +247,132 @@ class TestReportDownload:
 
 
 # ============================================================
+# Wave 2-Q — 다운로드 경로 헬퍼 / reports_path 일관 사용
+# ============================================================
+# 다운로드 라우터가 result_sources.reports_path 를 통해 경로를 계산하도록
+# 하드닝한다. 직접 os.path.join(REPORTS_DIR, ...) 호출이 흩어지지 않도록
+# 단일 진입점으로 모은 뒤 sanitize 동작도 함께 회귀 테스트한다.
+
+class TestSafeReportFilenameHelper:
+    """_safe_report_filename 헬퍼의 존재와 동작을 보증한다."""
+
+    def test_helper_exists(self):
+        from api.routers import report
+
+        assert hasattr(report, "_safe_report_filename"), (
+            "report 라우터에 _safe_report_filename 헬퍼가 있어야 한다"
+        )
+
+    def test_helper_replaces_forward_slashes(self):
+        from api.routers.report import _safe_report_filename
+
+        assert _safe_report_filename("a/b.html") == "a_b.html"
+
+    def test_helper_replaces_backslashes(self):
+        from api.routers.report import _safe_report_filename
+
+        assert _safe_report_filename("a\\b.html") == "a_b.html"
+
+    def test_helper_replaces_traversal_segment(self):
+        """``../secret`` 형태가 들어와도 슬래시가 _ 로 치환되어
+        디렉터리 밖을 가리키지 않게 만든다 (현재 동작 보존)."""
+        from api.routers.report import _safe_report_filename
+
+        # '../secret.html' → '.._secret.html' (현재 inline 로직과 동일)
+        assert _safe_report_filename("../secret.html") == ".._secret.html"
+
+    def test_helper_passthrough_for_simple_filename(self):
+        from api.routers.report import _safe_report_filename
+
+        assert _safe_report_filename("report.html") == "report.html"
+
+
+class TestDownloadUsesReportsPathHelper:
+    """download_report 가 ``result_sources.reports_path`` 를 통해 경로를 계산해야 한다.
+
+    REPORTS_DIR 만 직접 참조하는 inline ``os.path.join`` 호출이 남아 있으면,
+    아래의 ``reports_path`` monkeypatch 가 효과를 보지 못해 테스트가 실패한다.
+    """
+
+    def test_download_routes_through_reports_path(
+        self, monkeypatch, tmp_path,
+    ):
+        redirect_dir = tmp_path / "redirect"
+        redirect_dir.mkdir()
+        (redirect_dir / "ok.html").write_text(
+            "<html>redirected</html>", encoding="utf-8",
+        )
+
+        recorded: list[str] = []
+
+        def fake_reports_path(filename: str) -> str:
+            recorded.append(filename)
+            return str(redirect_dir / filename)
+
+        # REPORTS_DIR 은 빈 다른 디렉터리로 두어, reports_path 헬퍼를
+        # 거치지 않으면 파일을 못 찾도록 한다.
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setattr(result_sources, "REPORTS_DIR", str(elsewhere))
+        monkeypatch.setattr(result_sources, "reports_path", fake_reports_path)
+
+        r = client.get(
+            "/api/report/download/ok.html", headers=_AUTH_HEADERS,
+        )
+        assert r.status_code == 200
+        assert r.text == "<html>redirected</html>"
+        assert recorded == ["ok.html"]
+
+    def test_download_passes_sanitized_name_to_reports_path(
+        self, monkeypatch, tmp_path,
+    ):
+        """슬래시가 포함된 입력은 sanitize 된 형태로 reports_path 에 전달된다."""
+        target_dir = tmp_path / "redir2"
+        target_dir.mkdir()
+
+        recorded: list[str] = []
+
+        def fake_reports_path(filename: str) -> str:
+            recorded.append(filename)
+            return str(target_dir / filename)
+
+        monkeypatch.setattr(result_sources, "REPORTS_DIR", str(target_dir))
+        monkeypatch.setattr(result_sources, "reports_path", fake_reports_path)
+
+        # 함수 직접 호출 — FastAPI 의 path 매칭 동작에 의존하지 않는다.
+        from api.routers.report import download_report
+
+        result = download_report("a\\b.html")
+        # 파일이 존재하지 않으므로 missing 응답이지만, sanitize 된 이름으로
+        # reports_path 가 호출되었어야 한다.
+        assert result == {"error": "리포트 파일을 찾을 수 없습니다."}
+        assert recorded == ["a_b.html"]
+
+    def test_download_traversal_sanitized_stays_in_dir(
+        self, monkeypatch, tmp_path,
+    ):
+        """디렉터리 밖에 있는 secret.html 은 sanitize 후 접근 불가능하다.
+
+        ``../secret.html`` 같은 입력은 슬래시가 _ 로 치환되어
+        ``.._secret.html`` 이 된다. REPORTS_DIR 안에 그 파일이 없는 한
+        missing 응답이 되어야 하고, 디렉터리 밖의 진짜 secret.html 은
+        절대 읽히지 않는다.
+        """
+        reports_dir = tmp_path / "reports"
+        reports_dir.mkdir()
+        # 디렉터리 밖에 진짜 secret 파일 배치 — 읽히면 안 된다.
+        outside = tmp_path / "secret.html"
+        outside.write_text("<html>SECRET</html>", encoding="utf-8")
+
+        monkeypatch.setattr(result_sources, "REPORTS_DIR", str(reports_dir))
+
+        from api.routers.report import download_report
+
+        result = download_report("../secret.html")
+        assert result == {"error": "리포트 파일을 찾을 수 없습니다."}
+
+
+# ============================================================
 # GET /api/report/preview
 # ============================================================
 
