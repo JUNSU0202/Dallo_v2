@@ -104,6 +104,44 @@ class TestServiceBootstrap:
 
 
 # ============================================================
+# 회귀 스모크 — reports.report_generator 실모듈 임포트 보증
+# ============================================================
+# Wave 2-D 리팩터 직후 reports/report_generator.py 가 누락되어
+# /api/report/preview 호출 시 ModuleNotFoundError 가 발생했던 사고를
+# 차단하기 위한 테스트. fake_report_generator fixture 를 의도적으로
+# 사용하지 않아, 실제 reports.report_generator 가 import 가능한지를 검증한다.
+
+class TestReportGeneratorImportSmoke:
+    """reports.report_generator 실모듈이 항상 import 가능해야 한다."""
+
+    def test_module_is_importable(self):
+        """라우터의 lazy import 와 동일한 경로로 모듈을 직접 import."""
+        from reports.report_generator import ReportGenerator  # noqa: F401
+
+    def test_preview_no_data_does_not_raise_module_not_found(self, monkeypatch):
+        """데이터가 비어 있어도 응답은 정상 error payload — 임포트 실패 회귀 차단."""
+        monkeypatch.setattr(db_service, "get_latest_analysis", lambda: None)
+        monkeypatch.setattr(result_sources, "load_full_result", lambda: {})
+
+        r = client.get("/api/report/preview", headers=_AUTH_HEADERS)
+        assert r.status_code == 200
+        assert r.json() == {"error": "분석 데이터가 없습니다."}
+
+    def test_preview_with_real_generator_returns_html_and_markdown(
+        self, monkeypatch, synthetic_data,
+    ):
+        """fake fixture 없이 실제 ReportGenerator 가 HTML/Markdown 을 생성해야 한다."""
+        monkeypatch.setattr(db_service, "get_latest_analysis", lambda: synthetic_data)
+
+        r = client.get("/api/report/preview", headers=_AUTH_HEADERS)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert set(body.keys()) == {"html", "markdown"}
+        assert isinstance(body["html"], str) and "<html" in body["html"].lower()
+        assert isinstance(body["markdown"], str) and body["markdown"].lstrip().startswith("#")
+
+
+# ============================================================
 # GET /api/report/generate
 # ============================================================
 
