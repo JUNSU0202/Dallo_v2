@@ -19,6 +19,19 @@ Wave 2-G: api/server.py 에서 분리된 분석 실행/상태 엔드포인트.
     이 모듈에 모아두고 서버는 라우터를 include 만 한다 (api.server 미의존).
   - 테스트는 api.routers.analyze 의 _run_analysis / _USE_CELERY 를
     monkeypatch 하여 백그라운드/Celery 의존성을 끊을 수 있다.
+
+Wave 2-K — Celery/Redis 부수효과 lazy 화:
+  - 이전에는 모듈 import 시점에 ``from api.celery_app import celery_app`` /
+    ``from api.tasks import run_analysis_task`` + ``connection_for_write().
+    ensure_connection(...)`` 을 실행하여 ``api.routers.analyze`` 임포트만으로
+    Redis 연결을 시도했다 (docstring 의 'lazy' 와 어긋남).
+  - 이제 ``_USE_CELERY`` 는 sentinel(``None``) 상태로 초기화되고, 실제 Celery
+    경로가 필요한 핸들러에서 ``_ensure_celery_initialized()`` 가 한 번만
+    Celery 임포트 + Redis ping 을 시도한다. 실패 시 ``_USE_CELERY=False`` 로
+    캐시되어 후속 요청에서 매번 Redis 를 두드리지 않는다.
+  - 테스트는 ``_USE_CELERY`` / ``_celery`` / ``run_analysis_task`` 를
+    monkeypatch 하여 detector 를 우회하거나, ``_ensure_celery_initialized``
+    자체를 stub 으로 교체할 수 있다.
 """
 
 from __future__ import annotations
@@ -41,17 +54,46 @@ router = APIRouter()
 # 분석 작업 상태 저장 (메모리 — Celery 미사용 시 fallback)
 analysis_jobs: dict = {}
 
-# Celery 사용 가능 여부 감지 — Redis 연결 실패 시 자동으로 메모리 폴백
-_USE_CELERY = False
+# Celery 사용 가능 여부 — sentinel ``None`` 은 '아직 감지하지 않음' 을 의미.
+# 첫 사용 시 ``_ensure_celery_initialized()`` 가 ``True`` / ``False`` 로 채운다.
+# 테스트가 직접 monkeypatch 한 값(``True`` / ``False``)은 detector 가 그대로
+# 존중하여 추가 임포트를 시도하지 않는다.
+_USE_CELERY: bool | None = None
 _celery = None
 run_analysis_task = None
-try:
-    from api.celery_app import celery_app as _celery  # noqa: F401
-    from api.tasks import run_analysis_task as run_analysis_task  # noqa: F401
-    _celery.connection_for_write().ensure_connection(max_retries=1, timeout=2)
-    _USE_CELERY = True
-except Exception:
-    _USE_CELERY = False
+
+
+def _ensure_celery_initialized() -> bool:
+    """Celery/Redis 가용성을 lazy 하게 감지한다 (idempotent).
+
+    ``_USE_CELERY`` 가 ``None`` 일 때만 ``api.celery_app`` / ``api.tasks`` 임포트
+    + Redis ping 을 시도하고, 결과를 모듈 글로벌에 캐시한다. 이후 호출은
+    캐시된 값을 즉시 반환한다 — 매 요청마다 Redis 를 두드리지 않는다.
+
+    테스트가 ``_USE_CELERY`` 를 ``True`` / ``False`` 로 monkeypatch 한 경우,
+    이 함수는 그 값을 그대로 반환한다 (Celery 임포트 시도하지 않음).
+
+    리셋이 필요한 테스트는 ``_USE_CELERY=None``, ``_celery=None``,
+    ``run_analysis_task=None`` 을 monkeypatch 하면 다음 호출 시 다시 감지한다.
+    """
+    global _USE_CELERY, _celery, run_analysis_task
+
+    if _USE_CELERY is not None:
+        return _USE_CELERY
+
+    try:
+        from api.celery_app import celery_app as _celery_local
+        from api.tasks import run_analysis_task as _task_local
+        _celery_local.connection_for_write().ensure_connection(
+            max_retries=1, timeout=2
+        )
+        _celery = _celery_local
+        run_analysis_task = _task_local
+        _USE_CELERY = True
+    except Exception:
+        _USE_CELERY = False
+
+    return _USE_CELERY
 
 
 class AnalyzeRequest(BaseModel):
@@ -131,7 +173,7 @@ def _run_analysis(
 )
 def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
     """코드를 제출하여 분석을 시작합니다. Celery 사용 가능 시 task로 제출."""
-    if _USE_CELERY:
+    if _ensure_celery_initialized():
         # Celery task로 제출
         task = run_analysis_task.delay(
             code=req.code, filename=req.filename,
@@ -176,7 +218,7 @@ def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
 @router.get("/api/analyze/status/{task_id}", dependencies=[Depends(verify_api_key)])
 def get_celery_task_status(task_id: str):
     """Celery task 상태를 조회합니다. (AsyncResult 기반)"""
-    if not _USE_CELERY:
+    if not _ensure_celery_initialized():
         return {"error": "Celery가 활성화되어 있지 않습니다."}
 
     from celery.result import AsyncResult
@@ -206,7 +248,7 @@ def get_analysis_status(job_id: str):
         return job
 
     # Celery에서 조회 시도
-    if _USE_CELERY:
+    if _ensure_celery_initialized():
         from celery.result import AsyncResult
         result = AsyncResult(job_id, app=_celery)
         if result.state != "PENDING":
