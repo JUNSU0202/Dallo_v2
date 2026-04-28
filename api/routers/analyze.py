@@ -10,6 +10,17 @@ Wave 2-G: api/server.py 에서 분리된 분석 실행/상태 엔드포인트.
   - GET  /api/analyze/{job_id}
   - POST /api/analyze/file
 
+Wave 2-S 분리 — 라우터를 얇게 (analysis pipeline service 추출):
+  - 분석 파이프라인 실행 본체 / 잡 메타 빌딩 / 잡 ID 생성은
+    ``api.services.analysis_pipeline`` 으로 이동했다. 라우터는 요청 파싱과
+    응답 셰이프 조립, 그리고 백그라운드 디스패치(BackgroundTasks/Thread/
+    Celery) 만 담당한다.
+  - ``_run_analysis`` 는 서비스 ``execute_analysis_job`` 으로 위임하는
+    얇은 래퍼로 남겨둔다. 테스트가 라우터 모듈에 monkeypatch 하던 기존
+    표면 (``_run_analysis``, ``analysis_jobs``, ``_USE_CELERY``,
+    ``_celery``, ``run_analysis_task``, ``_ensure_celery_initialized``,
+    ``Thread``, ``AnalyzeRequest``) 은 그대로 보존된다.
+
 설계 메모:
   - analyzer.pipeline / reports.report_generator / celery 임포트는 모두
     함수 내부 lazy import 로 처리하여 api 패키지 임포트 시 외부 라이브러리
@@ -21,11 +32,7 @@ Wave 2-G: api/server.py 에서 분리된 분석 실행/상태 엔드포인트.
     monkeypatch 하여 백그라운드/Celery 의존성을 끊을 수 있다.
 
 Wave 2-K — Celery/Redis 부수효과 lazy 화:
-  - 이전에는 모듈 import 시점에 ``from api.celery_app import celery_app`` /
-    ``from api.tasks import run_analysis_task`` + ``connection_for_write().
-    ensure_connection(...)`` 을 실행하여 ``api.routers.analyze`` 임포트만으로
-    Redis 연결을 시도했다 (docstring 의 'lazy' 와 어긋남).
-  - 이제 ``_USE_CELERY`` 는 sentinel(``None``) 상태로 초기화되고, 실제 Celery
+  - ``_USE_CELERY`` 는 sentinel(``None``) 상태로 초기화되고, 실제 Celery
     경로가 필요한 핸들러에서 ``_ensure_celery_initialized()`` 가 한 번만
     Celery 임포트 + Redis ping 을 시도한다. 실패 시 ``_USE_CELERY=False`` 로
     캐시되어 후속 요청에서 매번 Redis 를 두드리지 않는다.
@@ -36,18 +43,14 @@ Wave 2-K — Celery/Redis 부수효과 lazy 화:
 
 from __future__ import annotations
 
-import json
-import os
-import uuid
-from datetime import datetime
 from threading import Thread
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
 from pydantic import BaseModel
 
-from api import result_sources
 from api.auth import verify_api_key
 from api.dto.responses import AnalyzeStartResponse
+from api.services import analysis_pipeline as _pipeline_service
 
 router = APIRouter()
 
@@ -114,59 +117,18 @@ def _run_analysis(
     model: str,
     multi_patch: bool = False,
 ):
-    """백그라운드에서 분석 파이프라인 실행 (analyzer.pipeline에 위임)."""
-    from analyzer.pipeline import execute_pipeline
+    """백그라운드 분석 실행 — 서비스 ``execute_analysis_job`` 으로 위임한다.
 
-    analysis_jobs[job_id]["status"] = "analyzing"
-
-    def on_progress(step: str):
-        analysis_jobs[job_id]["step"] = step
-
-    try:
-        result = execute_pipeline(
-            job_id=job_id, code=code, filename=filename,
-            use_llm=use_llm, provider=provider, model=model,
-            multi_patch=multi_patch, on_progress=on_progress,
-        )
-
-        analysis_jobs[job_id]["language"] = result.language
-        if result.llm_error:
-            analysis_jobs[job_id]["llm_error"] = result.llm_error
-        if result.db_error:
-            analysis_jobs[job_id]["db_error"] = result.db_error
-
-        result_data = result.result_data
-
-        # 호출 시점에 ``result_sources.REPORTS_DIR`` 을 다시 읽는다.
-        # 모듈 임포트 시점에 이름으로 박제하면 monkeypatch 가 반영되지 않는다.
-        reports_dir = result_sources.REPORTS_DIR
-
-        # JSON 파일로 저장 (server 전용 — Celery task에서는 생략)
-        os.makedirs(reports_dir, exist_ok=True)
-        with open(os.path.join(reports_dir, "full_result.json"), "w", encoding="utf-8") as f:
-            json.dump(result_data, f, indent=2, ensure_ascii=False)
-
-        # 리포트 자동 생성 (server 전용)
-        analysis_jobs[job_id]["step"] = "리포트 생성 중..."
-        try:
-            from reports.report_generator import ReportGenerator
-            report_gen = ReportGenerator()
-            report_files = report_gen.save_report(result_data, output_dir=reports_dir, fmt="both")
-            analysis_jobs[job_id]["report_files"] = {
-                k: f"/api/report/download/{os.path.basename(v)}"
-                for k, v in report_files.items()
-            }
-        except Exception as e:
-            analysis_jobs[job_id]["report_error"] = str(e)
-
-        analysis_jobs[job_id]["status"] = "completed"
-        analysis_jobs[job_id]["result"] = result_data
-        analysis_jobs[job_id]["step"] = "완료"
-
-    except Exception as e:
-        analysis_jobs[job_id]["status"] = "failed"
-        analysis_jobs[job_id]["error"] = str(e)
-        analysis_jobs[job_id]["step"] = f"오류: {str(e)}"
+    라우터의 모듈 글로벌 ``analysis_jobs`` 를 그대로 서비스에 넘기므로,
+    테스트가 ``analyze_router.analysis_jobs`` 를 monkeypatch 한 dict 가
+    그대로 반영된다.
+    """
+    _pipeline_service.execute_analysis_job(
+        jobs=analysis_jobs,
+        job_id=job_id, code=code, filename=filename,
+        use_llm=use_llm, provider=provider, model=model,
+        multi_patch=multi_patch,
+    )
 
 
 @router.post(
@@ -192,19 +154,13 @@ def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
         }
 
     # Celery 미사용 fallback — 기존 메모리 방식
-    job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-
-    analysis_jobs[job_id] = {
-        "job_id": job_id,
-        "status": "queued",
-        "step": "대기 중...",
-        "filename": req.filename,
-        "code_length": len(req.code),
-        "use_llm": req.use_llm,
-        "created_at": datetime.now().isoformat(),
-        "result": None,
-        "error": None,
-    }
+    job_id = _pipeline_service.make_job_id()
+    analysis_jobs[job_id] = _pipeline_service.build_initial_job_meta(
+        job_id=job_id,
+        filename=req.filename,
+        code_length=len(req.code),
+        use_llm=req.use_llm,
+    )
 
     background_tasks.add_task(
         _run_analysis, job_id, req.code, req.filename,
@@ -283,12 +239,10 @@ async def analyze_file(file: UploadFile = File(...), use_llm: bool = Form(True))
     req = AnalyzeRequest(code=code, filename=file.filename or "uploaded.py", use_llm=use_llm)
 
     # 동기 실행 (파일 업로드는 즉시 결과 반환)
-    job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    analysis_jobs[job_id] = {
-        "job_id": job_id, "status": "queued", "step": "시작",
-        "filename": req.filename, "created_at": datetime.now().isoformat(),
-        "result": None, "error": None,
-    }
+    job_id = _pipeline_service.make_job_id()
+    analysis_jobs[job_id] = _pipeline_service.build_upload_job_meta(
+        job_id=job_id, filename=req.filename,
+    )
 
     t = Thread(
         target=_run_analysis,
