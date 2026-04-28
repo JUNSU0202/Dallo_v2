@@ -11,6 +11,11 @@
   (예: tests/test_encryption.py)는 의도적으로 환경변수를 비우고 fail-fast 동작을
   검증하는데, 그 테스트들은 값을 pop 한 뒤 원본을 복원하는 로직을 가지고 있어
   여기서 기본값을 주입해도 문제 없이 통과한다.
+- Wave 2-I: api.server 의 ``init_db()`` 가 모듈 임포트 사이드이펙트에서 FastAPI
+  lifespan 으로 이동했다. 기존 테스트들은 ``client = TestClient(app)`` 형태로
+  TestClient 를 컨텍스트 매니저 없이 사용하여 lifespan 이 발화하지 않는다.
+  fresh checkout 환경에서도 DB 테이블이 존재하도록, 세션 시작 시 한 번만
+  ``init_db()`` 를 호출한다 (idempotent).
 
 sys.path 보일러플레이트 정리에 대한 주의
 ---------------------------------------
@@ -45,6 +50,24 @@ def _apply_safe_test_env_defaults() -> None:
 # 컬렉션 단계(픽스처 실행 이전)부터 모듈 임포트 시 환경변수가 필요한 코드가
 # 있을 수 있으므로 모듈 로드 시점에 즉시 적용한다.
 _apply_safe_test_env_defaults()
+
+
+def _ensure_db_tables_for_tests() -> None:
+    """테스트 세션 시작 시 DB 테이블이 존재하도록 보장한다 (idempotent).
+
+    api.server 의 ``init_db()`` 가 모듈 임포트 시점에서 lifespan 으로 옮겨졌기
+    때문에, ``client = TestClient(app)`` 패턴(컨텍스트 매니저 미사용) 으로
+    호출되는 기존 테스트들에서는 startup 이 발화하지 않는다. fresh DB 환경
+    에서도 ``/api/stats`` 같은 DB 의존 엔드포인트가 동작하도록 세션 1회만
+    init 한다. ``Base.metadata.create_all`` 은 멱등이라 재호출 시 노옵.
+    """
+    from db.models import init_db
+    init_db()
+
+
+# 모듈 임포트 시점에 한 번 실행하여, 테스트 모듈 로드 단계에서 DB 를 사용하는
+# 모듈(예: db.service)이 안전하게 동작하도록 한다.
+_ensure_db_tables_for_tests()
 
 
 @pytest.fixture(scope="session", autouse=True)
