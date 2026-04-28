@@ -8,21 +8,17 @@ React 대시보드가 이 API를 호출하여 데이터를 가져갑니다.
   uvicorn api.server:app --reload --port 8000
 """
 
-from fastapi import FastAPI, Query, UploadFile, File, Form, BackgroundTasks, Depends
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Optional
 from api.auth import verify_api_key
 from api.dto.responses import AnalyzeStartResponse
-from api.result_sources import (
-    REPORTS_DIR,
-    load_bandit_report,
-    load_full_result,
-)
+from api.result_sources import REPORTS_DIR
 from api.routers.dashboard import router as dashboard_router
 from api.routers.quick_scan import router as quick_scan_router
+from api.routers.report import router as report_router
 import json
 import os
 import sys
@@ -102,6 +98,8 @@ class ApplyPatchRequest(BaseModel):
 app.include_router(dashboard_router)
 # 빠른 스캔 라우터 (POST /api/quick-scan, /api/quick-scan-project) — Wave 2-C 분리
 app.include_router(quick_scan_router)
+# 리포트 라우터 (GET /api/report/generate|download/{filename}|preview) — Wave 2-D 분리
+app.include_router(report_router)
 
 
 @app.get("/")
@@ -431,98 +429,8 @@ async def analyze_file(file: UploadFile = File(...), use_llm: bool = Form(True))
 # ============================================================
 # 리포트 생성 API
 # ============================================================
-
-@app.get("/api/report/generate", dependencies=[Depends(verify_api_key)])
-def generate_report(
-    fmt: str = Query("html", description="md, html, both"),
-    session_id: Optional[str] = Query(None, description="세션 ID (없으면 최신)"),
-    include_deps: bool = Query(False, description="의존성 스캔 포함"),
-):
-    """분석 리포트를 생성하고 다운로드 경로를 반환합니다."""
-    from reports.report_generator import ReportGenerator
-
-    # 데이터 로드
-    if session_id:
-        data = db_service.get_analysis_by_session(session_id)
-    else:
-        data = db_service.get_latest_analysis()
-
-    if not data:
-        full = load_full_result()
-        if not full:
-            return {"error": "분석 데이터가 없습니다. 먼저 코드 분석을 실행하세요."}
-        data = full
-
-    # 의존성 스캔 포함
-    deps_data = None
-    if include_deps:
-        try:
-            from analyzer.dependency_scanner import DependencyScanner
-            scanner = DependencyScanner()
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            deps_data = {"results": [r.to_dict() for r in scanner.scan(project_root)]}
-        except Exception:
-            pass
-
-    gen = ReportGenerator()
-    result = gen.save_report(data, output_dir=REPORTS_DIR, fmt=fmt, include_deps=deps_data)
-
-    return {
-        "status": "generated",
-        "files": result,
-        "download_urls": {
-            k: f"/api/report/download/{os.path.basename(v)}"
-            for k, v in result.items()
-        },
-    }
-
-
-@app.get("/api/report/download/{filename}", dependencies=[Depends(verify_api_key)])
-def download_report(filename: str):
-    """생성된 리포트 파일을 다운로드합니다."""
-    safe_name = filename.replace("/", "_").replace("\\", "_")
-    path = os.path.join(REPORTS_DIR, safe_name)
-    if not os.path.exists(path):
-        return {"error": "리포트 파일을 찾을 수 없습니다."}
-
-    media_type = "text/html" if path.endswith(".html") else "text/markdown"
-    return FileResponse(path, media_type=media_type, filename=safe_name)
-
-
-@app.get("/api/report/preview", dependencies=[Depends(verify_api_key)])
-def preview_report(
-    session_id: Optional[str] = Query(None),
-    include_deps: bool = Query(False),
-):
-    """리포트를 생성하고 HTML 내용을 바로 반환합니다 (미리보기)."""
-    from reports.report_generator import ReportGenerator
-
-    if session_id:
-        data = db_service.get_analysis_by_session(session_id)
-    else:
-        data = db_service.get_latest_analysis()
-
-    if not data:
-        full = load_full_result()
-        if not full:
-            return {"error": "분석 데이터가 없습니다."}
-        data = full
-
-    deps_data = None
-    if include_deps:
-        try:
-            from analyzer.dependency_scanner import DependencyScanner
-            scanner = DependencyScanner()
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            deps_data = {"results": [r.to_dict() for r in scanner.scan(project_root)]}
-        except Exception:
-            pass
-
-    gen = ReportGenerator()
-    html = gen.generate_html(data, deps_data)
-    md = gen.generate_markdown(data, deps_data)
-
-    return {"html": html, "markdown": md}
+# Wave 2-D: GET /api/report/generate|download/{filename}|preview 는
+# api/routers/report.py 로 이동되었다 (위 include_router 참조).
 
 
 # ============================================================
