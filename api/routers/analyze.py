@@ -39,6 +39,16 @@ Wave 2-K — Celery/Redis 부수효과 lazy 화:
   - 테스트는 ``_USE_CELERY`` / ``_celery`` / ``run_analysis_task`` 를
     monkeypatch 하여 detector 를 우회하거나, ``_ensure_celery_initialized``
     자체를 stub 으로 교체할 수 있다.
+
+Wave 3-A — Celery detector 서비스 분리:
+  - 실제 가용성 감지 본체는 ``api.services.celery_detector`` 로 옮겨졌다.
+    이 모듈의 ``_ensure_celery_initialized()`` 는 서비스의
+    ``is_celery_available()`` 결과로 라우터 모듈 글로벌
+    (``_USE_CELERY``, ``_celery``, ``run_analysis_task``) 을 동기화하는
+    얇은 호환 래퍼로 남는다.
+  - 라우터 핸들러는 모듈 글로벌 ``_celery`` / ``run_analysis_task`` 를
+    그대로 참조하므로, 기존 테스트가 라우터 모듈에 monkeypatch 하던 표면은
+    그대로 작동한다.
 """
 
 from __future__ import annotations
@@ -51,6 +61,7 @@ from pydantic import BaseModel
 from api.auth import verify_api_key
 from api.dto.responses import AnalyzeStartResponse
 from api.services import analysis_pipeline as _pipeline_service
+from api.services import celery_detector as _celery_detector
 
 router = APIRouter()
 
@@ -69,31 +80,24 @@ run_analysis_task = None
 def _ensure_celery_initialized() -> bool:
     """Celery/Redis 가용성을 lazy 하게 감지한다 (idempotent).
 
-    ``_USE_CELERY`` 가 ``None`` 일 때만 ``api.celery_app`` / ``api.tasks`` 임포트
-    + Redis ping 을 시도하고, 결과를 모듈 글로벌에 캐시한다. 이후 호출은
-    캐시된 값을 즉시 반환한다 — 매 요청마다 Redis 를 두드리지 않는다.
+    라우터 모듈 글로벌 ``_USE_CELERY`` 가 ``None`` 이 아니면(테스트가 직접
+    True/False 로 세팅한 경우 포함) 그 값을 그대로 반환한다 — 추가 임포트나
+    네트워크 시도를 하지 않는다.
 
-    테스트가 ``_USE_CELERY`` 를 ``True`` / ``False`` 로 monkeypatch 한 경우,
-    이 함수는 그 값을 그대로 반환한다 (Celery 임포트 시도하지 않음).
-
-    리셋이 필요한 테스트는 ``_USE_CELERY=None``, ``_celery=None``,
-    ``run_analysis_task=None`` 을 monkeypatch 하면 다음 호출 시 다시 감지한다.
+    그 외에는 ``api.services.celery_detector.is_celery_available()`` 에 위임
+    하고, 결과를 라우터 모듈 글로벌(``_USE_CELERY``, ``_celery``,
+    ``run_analysis_task``) 로 동기화한다.
     """
     global _USE_CELERY, _celery, run_analysis_task
 
     if _USE_CELERY is not None:
         return _USE_CELERY
 
-    try:
-        from api.celery_app import celery_app as _celery_local
-        from api.tasks import run_analysis_task as _task_local
-        _celery_local.connection_for_write().ensure_connection(
-            max_retries=1, timeout=2
-        )
-        _celery = _celery_local
-        run_analysis_task = _task_local
+    if _celery_detector.is_celery_available():
+        _celery = _celery_detector.get_celery_app()
+        run_analysis_task = _celery_detector.get_run_analysis_task()
         _USE_CELERY = True
-    except Exception:
+    else:
         _USE_CELERY = False
 
     return _USE_CELERY
