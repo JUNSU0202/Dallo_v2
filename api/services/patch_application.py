@@ -18,15 +18,17 @@ import os
 from datetime import datetime
 from typing import List
 
+from api.services import safe_paths
+
 
 def sanitize_filename(filename: str) -> str:
-    """파일명에 포함된 ``/`` 와 ``\\`` 를 ``_`` 로 평탄화한다.
+    """파일명을 sanitize 한다 (Wave 3-B: ``safe_paths`` 위임).
 
     로컬 ``applied/`` 디렉터리에 저장할 때 디렉터리 트래버설을 막고,
     중첩 디렉터리를 만들지 않도록 한다. 응답에 노출되는 ``filename``
     필드는 호출자가 원본 그대로 보존해야 한다 (이 함수의 책임이 아님).
     """
-    return filename.replace("/", "_").replace("\\", "_")
+    return safe_paths.sanitize_filename(filename)
 
 
 def build_unified_diff(
