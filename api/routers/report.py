@@ -29,18 +29,18 @@ from fastapi.responses import FileResponse
 from api import result_sources
 from api.auth import verify_api_key
 from api.services import report_generation as report_service
+from api.services import safe_paths
 
 router = APIRouter()
 
 
 def _safe_report_filename(filename: str) -> str:
-    """다운로드 요청 파일명에서 경로 구분자를 ``_`` 로 치환한다.
+    """다운로드 요청 파일명을 sanitize 한다 (Wave 3-B: ``safe_paths`` 위임).
 
-    Wave 2-Q: 기존 inline 로직(``replace("/", "_").replace("\\", "_")``) 을
-    헬퍼로 추출했다. 동작은 보존하며, 다운로드 라우터 단일 진입점에서만
-    sanitize 를 수행하도록 모은다.
+    Wave 2-Q 의 inline 표현식을 Wave 3-B 에서 ``safe_paths.sanitize_filename``
+    으로 모았다. 동작(``/``, ``\\`` → ``_``)은 그대로 보존된다.
     """
-    return filename.replace("/", "_").replace("\\", "_")
+    return safe_paths.sanitize_filename(filename)
 
 
 @router.get("/api/report/generate", dependencies=[Depends(verify_api_key)])
@@ -67,7 +67,7 @@ def generate_report(
         "status": "generated",
         "files": result,
         "download_urls": {
-            k: f"/api/report/download/{os.path.basename(v)}"
+            k: f"/api/report/download/{safe_paths.report_download_basename(v)}"
             for k, v in result.items()
         },
     }

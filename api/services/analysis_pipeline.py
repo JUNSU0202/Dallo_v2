@@ -28,6 +28,7 @@ from datetime import datetime
 from typing import MutableMapping
 
 from api import result_sources
+from api.services import safe_paths
 
 
 def make_job_id() -> str:
@@ -135,7 +136,7 @@ def execute_analysis_job(
                 result_data, output_dir=reports_dir, fmt="both",
             )
             jobs[job_id]["report_files"] = {
-                k: f"/api/report/download/{os.path.basename(v)}"
+                k: f"/api/report/download/{safe_paths.report_download_basename(v)}"
                 for k, v in report_files.items()
             }
         except Exception as e:
