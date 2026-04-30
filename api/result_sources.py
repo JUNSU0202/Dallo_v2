@@ -11,10 +11,21 @@ Wave 2-O 하드닝
   (대시보드/리포트 엔드포인트가 손상된 파일에 의해 500 으로 떨어지지 않도록).
 - 테스트가 ``result_sources.REPORTS_DIR = tmp_dir`` 로 monkeypatch 하는
   기존 패턴은 그대로 유지된다.
+
+Wave 3-C 하드닝
+---------------
+- ``REPORTS_DIR`` 의 단일 소스 오브 트루스를 ``api.settings.REPORTS_DIR`` 로
+  옮긴다. 이 모듈은 그 값을 모듈 글로벌로 재노출만 하므로 기존
+  ``monkeypatch.setattr(result_sources, "REPORTS_DIR", tmp_dir)`` 패턴은
+  그대로 동작한다.
+- ``DALLO_REPORTS_DIR`` 환경변수가 있으면 settings 가 먼저 해석한 절대경로가
+  여기로 흘러 들어온다 (cwd 의존 없음).
 """
 
 import json
 import os
+
+from api import settings
 
 
 def project_root() -> str:
@@ -28,9 +39,10 @@ def project_root() -> str:
 
 
 # repo root 기준 absolute path. cwd 변동에 영향받지 않는다.
+# 단일 소스 오브 트루스는 ``api.settings.REPORTS_DIR`` (Wave 3-C).
 # 테스트에서는 ``monkeypatch.setattr(result_sources, "REPORTS_DIR", str(tmp))``
-# 로 격리할 수 있다.
-REPORTS_DIR = os.path.join(project_root(), "reports")
+# 로 격리할 수 있다 (기존 패턴 그대로 유지).
+REPORTS_DIR = settings.REPORTS_DIR
 
 
 def reports_path(filename: str) -> str:
