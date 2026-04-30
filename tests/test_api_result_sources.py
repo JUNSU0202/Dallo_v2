@@ -108,6 +108,62 @@ class TestProjectRootAndReportsDir:
 
 
 # ============================================================
+# Wave 3-C — DALLO_REPORTS_DIR env override + cwd 독립성
+# ============================================================
+
+def _reload_result_sources():
+    """env 변경 후 ``api.result_sources`` 와 ``api.settings`` 를 함께 reload.
+
+    ``from api import settings`` 는 ``api`` 패키지 네임스페이스에 ``settings``
+    속성을 박제하므로 ``sys.modules.pop`` 만으로는 새로 환경변수를 반영한
+    settings 가 되살아나지 않는다. ``importlib.reload`` 로 두 모듈을
+    명시적으로 재실행시켜 새로운 env 값이 반영되게 한다.
+    """
+    import importlib
+    import api
+    import api.settings as settings_mod
+    import api.result_sources as result_sources_mod
+
+    importlib.reload(settings_mod)
+    importlib.reload(result_sources_mod)
+    # api.settings 와 api.result_sources 를 새 객체로 다시 바인딩.
+    api.settings = sys.modules["api.settings"]
+    api.result_sources = sys.modules["api.result_sources"]
+    return sys.modules["api.result_sources"]
+
+
+class TestReportsDirEnvOverride:
+    """Wave 3-C: ``DALLO_REPORTS_DIR`` env override 와 cwd 독립성 검증."""
+
+    def test_env_override_absolute_used_as_is(self, monkeypatch, tmp_path):
+        target = str(tmp_path / "rep_abs")
+        monkeypatch.setenv("DALLO_REPORTS_DIR", target)
+        mod = _reload_result_sources()
+        assert mod.REPORTS_DIR == target
+
+    def test_env_override_relative_resolved_under_project_root(self, monkeypatch):
+        monkeypatch.setenv("DALLO_REPORTS_DIR", "alt_reports")
+        mod = _reload_result_sources()
+        assert mod.REPORTS_DIR == os.path.join(mod.project_root(), "alt_reports")
+
+    def test_default_reports_dir_independent_of_cwd(self, monkeypatch, tmp_path):
+        """다른 cwd 에서 reload 해도 기본 REPORTS_DIR 은 PROJECT_ROOT 기준이다."""
+        monkeypatch.delenv("DALLO_REPORTS_DIR", raising=False)
+        monkeypatch.chdir(tmp_path)
+        mod = _reload_result_sources()
+        assert mod.REPORTS_DIR == os.path.join(mod.project_root(), "reports")
+
+    def test_relative_env_reports_dir_independent_of_cwd(self, monkeypatch, tmp_path):
+        """상대경로 env 도 cwd 가 아니라 PROJECT_ROOT 에 join 된다."""
+        monkeypatch.setenv("DALLO_REPORTS_DIR", "rel_rep")
+        monkeypatch.chdir(tmp_path)
+        mod = _reload_result_sources()
+        assert mod.REPORTS_DIR == os.path.join(mod.project_root(), "rel_rep")
+        # cwd 의 상대경로(=tmp_path 안) 와는 다르다
+        assert mod.REPORTS_DIR != os.path.join(str(tmp_path), "rel_rep")
+
+
+# ============================================================
 # load_bandit_report
 # ============================================================
 

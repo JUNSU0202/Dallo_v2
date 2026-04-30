@@ -18,11 +18,28 @@ import importlib
 import os
 import sys
 
+import pytest
+
 
 def _reload_settings():
     """env 변경 후 ``api.settings`` 를 재임포트하여 새 값을 반영시킨다."""
     sys.modules.pop("api.settings", None)
     return importlib.import_module("api.settings")
+
+
+@pytest.fixture(autouse=True)
+def _restore_settings_module_after_each_test():
+    """각 테스트 종료 시 ``api.settings`` 모듈을 기본 env 상태로 reload.
+
+    여러 테스트가 ``_reload_settings()`` 로 settings 모듈 글로벌을 덮어쓰는데,
+    pytest 의 ``monkeypatch.setenv`` 는 env 만 복원하고 모듈 상태는 그대로
+    남긴다. 이전 테스트에서 박제된 값이 ``TestPatchRouterUsesSettings`` 같은
+    이후 회귀 가드에 새어들지 않도록, 매 테스트 후 settings 를 한 번 더
+    reload 하여 깨끗한 기본값으로 되돌린다.
+    """
+    yield
+    sys.modules.pop("api.settings", None)
+    importlib.import_module("api.settings")
 
 
 class TestSettingsDefaults:
@@ -44,10 +61,21 @@ class TestSettingsDefaults:
             settings.PROJECT_ROOT, "dashboard", "dist",
         )
 
-    def test_default_upload_dir(self, monkeypatch):
+    def test_default_upload_dir_is_absolute_under_project_root(self, monkeypatch):
+        """Wave 3-C: 기본 UPLOAD_DIR 은 ``<root>/uploads`` 의 절대경로."""
         monkeypatch.delenv("DALLO_UPLOAD_DIR", raising=False)
         mod = _reload_settings()
-        assert mod.UPLOAD_DIR == "uploads"
+        assert os.path.isabs(mod.UPLOAD_DIR), (
+            "기본 UPLOAD_DIR 은 cwd 의존을 막기 위해 절대경로여야 한다"
+        )
+        assert mod.UPLOAD_DIR == os.path.join(mod.PROJECT_ROOT, "uploads")
+
+    def test_default_reports_dir_is_absolute_under_project_root(self, monkeypatch):
+        """Wave 3-C: 기본 REPORTS_DIR 은 ``<root>/reports`` 의 절대경로."""
+        monkeypatch.delenv("DALLO_REPORTS_DIR", raising=False)
+        mod = _reload_settings()
+        assert os.path.isabs(mod.REPORTS_DIR)
+        assert mod.REPORTS_DIR == os.path.join(mod.PROJECT_ROOT, "reports")
 
     def test_default_cors_origins(self, monkeypatch):
         monkeypatch.delenv("DALLO_CORS_ORIGINS", raising=False)
@@ -59,11 +87,39 @@ class TestSettingsDefaults:
 
 
 class TestSettingsEnvOverrides:
-    def test_upload_dir_env_override(self, monkeypatch, tmp_path):
+    def test_upload_dir_env_override_absolute(self, monkeypatch, tmp_path):
+        """절대경로 env 값은 그대로 사용된다."""
         target = str(tmp_path / "uploads_override")
         monkeypatch.setenv("DALLO_UPLOAD_DIR", target)
         mod = _reload_settings()
         assert mod.UPLOAD_DIR == target
+
+    def test_upload_dir_env_override_relative_resolved_under_root(self, monkeypatch):
+        """Wave 3-C: 상대경로 env 값은 cwd 가 아닌 PROJECT_ROOT 기준으로 정규화된다."""
+        monkeypatch.setenv("DALLO_UPLOAD_DIR", "custom_uploads")
+        mod = _reload_settings()
+        assert mod.UPLOAD_DIR == os.path.join(mod.PROJECT_ROOT, "custom_uploads")
+
+    def test_reports_dir_env_override_absolute(self, monkeypatch, tmp_path):
+        """Wave 3-C: 절대경로 ``DALLO_REPORTS_DIR`` 는 그대로 사용된다."""
+        target = str(tmp_path / "reports_override")
+        monkeypatch.setenv("DALLO_REPORTS_DIR", target)
+        mod = _reload_settings()
+        assert mod.REPORTS_DIR == target
+
+    def test_reports_dir_env_override_relative_resolved_under_root(self, monkeypatch):
+        """Wave 3-C: 상대경로 ``DALLO_REPORTS_DIR`` 는 PROJECT_ROOT 기준으로 정규화."""
+        monkeypatch.setenv("DALLO_REPORTS_DIR", "out/reports")
+        mod = _reload_settings()
+        assert mod.REPORTS_DIR == os.path.join(mod.PROJECT_ROOT, "out", "reports")
+
+    def test_path_env_blank_falls_back_to_default(self, monkeypatch):
+        """공백/빈 문자열 env 는 기본값으로 폴백한다."""
+        monkeypatch.setenv("DALLO_UPLOAD_DIR", "   ")
+        monkeypatch.setenv("DALLO_REPORTS_DIR", "")
+        mod = _reload_settings()
+        assert mod.UPLOAD_DIR == os.path.join(mod.PROJECT_ROOT, "uploads")
+        assert mod.REPORTS_DIR == os.path.join(mod.PROJECT_ROOT, "reports")
 
     def test_cors_origins_env_override(self, monkeypatch):
         monkeypatch.setenv(
@@ -89,6 +145,32 @@ class TestSettingsEnvOverrides:
             "http://localhost:3000",
             "http://localhost:5173",
         ]
+
+
+class TestSettingsCwdIndependence:
+    """Wave 3-C: 경로 설정은 import 시 cwd 에 의존하지 않아야 한다."""
+
+    def test_default_paths_independent_of_cwd(self, monkeypatch, tmp_path):
+        """전혀 다른 cwd 에서 settings 를 reload 해도 기본 경로는 동일."""
+        monkeypatch.delenv("DALLO_UPLOAD_DIR", raising=False)
+        monkeypatch.delenv("DALLO_REPORTS_DIR", raising=False)
+
+        # 다른 cwd 로 이동한 뒤 reload — 기본값은 PROJECT_ROOT 기준이므로 불변.
+        monkeypatch.chdir(tmp_path)
+        mod = _reload_settings()
+        assert mod.UPLOAD_DIR == os.path.join(mod.PROJECT_ROOT, "uploads")
+        assert mod.REPORTS_DIR == os.path.join(mod.PROJECT_ROOT, "reports")
+
+    def test_relative_env_paths_independent_of_cwd(self, monkeypatch, tmp_path):
+        """상대경로 env 값도 cwd 가 아니라 PROJECT_ROOT 에 join 된다."""
+        monkeypatch.setenv("DALLO_UPLOAD_DIR", "rel_uploads")
+        monkeypatch.setenv("DALLO_REPORTS_DIR", "rel_reports")
+        monkeypatch.chdir(tmp_path)
+        mod = _reload_settings()
+        assert mod.UPLOAD_DIR == os.path.join(mod.PROJECT_ROOT, "rel_uploads")
+        assert mod.REPORTS_DIR == os.path.join(mod.PROJECT_ROOT, "rel_reports")
+        # cwd 의 상대경로(=PROJECT_ROOT 외부) 와 같지 않음을 명시 검증
+        assert mod.UPLOAD_DIR != os.path.join(str(tmp_path), "rel_uploads")
 
 
 class TestSettingsImportSurface:
