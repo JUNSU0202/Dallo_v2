@@ -308,6 +308,201 @@ class TestRouterImportSurface:
 
 
 # ============================================================
+# Wave 3-D — analysis_jobs 메모리 폴백 정리 위임
+# ============================================================
+
+
+class TestAnalysisJobsStoreCleanupDelegation:
+    """라우터가 ``api.services.analysis_jobs_store.cleanup`` 으로 위임하는지,
+    그리고 기존 ``analysis_jobs`` monkeypatch 패턴이 그대로 작동하는지 검증.
+    """
+
+    def test_start_analysis_calls_cleanup_before_insert(
+        self, memory_backend, isolated_jobs, monkeypatch,
+    ):
+        """POST /api/analyze 메모리 폴백 경로에서 cleanup 이 호출된다."""
+        from api.services import analysis_jobs_store as store
+
+        captured: list[dict] = []
+
+        def _fake_cleanup(jobs, **kw):
+            # 호출 시점에는 새 잡이 아직 삽입되지 않았어야 한다
+            captured.append({
+                "size_at_call": len(jobs),
+                "kw": kw,
+                "is_router_dict": jobs is isolated_jobs,
+            })
+            return 0
+
+        monkeypatch.setattr(store, "cleanup", _fake_cleanup)
+
+        r = client.post(
+            "/api/analyze",
+            json={"code": "x=1\n", "filename": "t.py", "use_llm": False},
+            headers=_AUTH_HEADERS,
+        )
+        assert r.status_code == 200, r.text
+
+        assert len(captured) == 1
+        call = captured[0]
+        # cleanup 은 라우터의 module-level analysis_jobs 를 받아야 한다
+        assert call["is_router_dict"] is True
+        # 호출 시점 size 는 0 — 새 잡 삽입 전
+        assert call["size_at_call"] == 0
+        # 응답의 job_id 는 exclude_ids 로 보호되어야 한다
+        new_job_id = r.json()["job_id"]
+        assert new_job_id in isolated_jobs
+        assert "exclude_ids" in call["kw"]
+        assert new_job_id in tuple(call["kw"]["exclude_ids"])
+
+    def test_get_analysis_status_calls_cleanup_with_job_id_excluded(
+        self, memory_backend, isolated_jobs, monkeypatch,
+    ):
+        """GET /api/analyze/{job_id} 도 cleanup 을 호출하고 조회 중인 잡을 보호."""
+        from api.services import analysis_jobs_store as store
+
+        # 메모리에 잡을 시드
+        isolated_jobs["job_q1"] = {
+            "job_id": "job_q1", "status": "completed",
+            "step": "완료", "result": {"k": "v"},
+        }
+
+        captured: list[dict] = []
+
+        def _fake_cleanup(jobs, **kw):
+            captured.append({"is_router_dict": jobs is isolated_jobs, "kw": kw})
+            return 0
+
+        monkeypatch.setattr(store, "cleanup", _fake_cleanup)
+
+        r = client.get("/api/analyze/job_q1", headers=_AUTH_HEADERS)
+        assert r.status_code == 200
+        assert r.json()["job_id"] == "job_q1"
+
+        assert len(captured) == 1
+        call = captured[0]
+        assert call["is_router_dict"] is True
+        assert "exclude_ids" in call["kw"]
+        assert "job_q1" in tuple(call["kw"]["exclude_ids"])
+
+    def test_analyze_file_calls_cleanup_before_insert(
+        self, isolated_jobs, monkeypatch,
+    ):
+        """POST /api/analyze/file 도 잡 삽입 전 cleanup 을 호출."""
+        from api.services import analysis_jobs_store as store
+
+        # 백그라운드는 차단
+        monkeypatch.setattr(analyze_router, "_run_analysis", lambda *a, **kw: None)
+
+        class _NoopThread:
+            def __init__(self, *a, **kw):
+                pass
+
+            def start(self):
+                pass
+
+        monkeypatch.setattr(analyze_router, "Thread", _NoopThread)
+
+        captured: list[dict] = []
+
+        def _fake_cleanup(jobs, **kw):
+            captured.append({"size_at_call": len(jobs), "kw": kw})
+            return 0
+
+        monkeypatch.setattr(store, "cleanup", _fake_cleanup)
+
+        files = {"file": ("u.py", io.BytesIO(b"a=1\n"), "text/x-python")}
+        r = client.post(
+            "/api/analyze/file",
+            headers=_AUTH_HEADERS,
+            files=files,
+            data={"use_llm": "false"},
+        )
+        assert r.status_code == 200
+        assert len(captured) == 1
+        # 삽입 전 호출 — size 는 0
+        assert captured[0]["size_at_call"] == 0
+        new_job_id = r.json()["job_id"]
+        assert new_job_id in tuple(captured[0]["kw"]["exclude_ids"])
+
+    def test_status_lookup_does_not_evict_currently_retrieved_job(
+        self, memory_backend, isolated_jobs,
+    ):
+        """TTL 만료 직전인 잡이라도, 그 잡을 조회하는 요청은 자기를 잃지 않는다.
+
+        - 잡을 ``created_at`` 이 매우 옛날이도록 시드한다.
+        - 기본 TTL 이라면 cleanup 이 이를 제거할 것이지만, 라우터는 조회 중인
+          job_id 를 ``exclude_ids`` 로 보호하므로 응답이 잡을 그대로 반환해야 한다.
+        """
+        # 잡 메타 — 매우 오래된 created_at
+        isolated_jobs["job_old"] = {
+            "job_id": "job_old",
+            "status": "completed",
+            "step": "완료",
+            "created_at": "2000-01-01T00:00:00",
+            "result": {"ok": True},
+        }
+        r = client.get("/api/analyze/job_old", headers=_AUTH_HEADERS)
+        assert r.status_code == 200
+        # 조회 중인 잡은 보호되어야 한다 — 응답이 메모리 잡을 그대로 반환
+        assert r.json()["job_id"] == "job_old"
+        # 그리고 메모리에서도 제거되지 않아야 한다 (exclude 보호)
+        assert "job_old" in isolated_jobs
+
+    def test_start_analysis_drops_old_jobs_via_cleanup(
+        self, memory_backend, isolated_jobs, monkeypatch,
+    ):
+        """오래된 잡이 누적되어 있는 상태에서 새 잡을 시작하면, cleanup 이
+        TTL 만료 잡을 제거해 메모리가 무한 증가하지 않는다.
+        """
+        # 환경변수로 TTL 을 짧게 — 오래된 잡이 expire 되도록
+        monkeypatch.setenv("DALLO_ANALYSIS_JOBS_TTL_SECONDS", "60")
+        # 오래된 잡 시드
+        isolated_jobs["expired_a"] = {
+            "job_id": "expired_a", "status": "completed", "step": "완료",
+            "created_at": "2000-01-01T00:00:00", "result": None, "error": None,
+        }
+        isolated_jobs["expired_b"] = {
+            "job_id": "expired_b", "status": "completed", "step": "완료",
+            "created_at": "2001-01-01T00:00:00", "result": None, "error": None,
+        }
+
+        r = client.post(
+            "/api/analyze",
+            json={"code": "x=1\n", "filename": "t.py", "use_llm": False},
+            headers=_AUTH_HEADERS,
+        )
+        assert r.status_code == 200
+        new_id = r.json()["job_id"]
+
+        # 새 잡은 살아있고, 만료된 잡은 정리되어야 한다
+        assert new_id in isolated_jobs
+        assert "expired_a" not in isolated_jobs
+        assert "expired_b" not in isolated_jobs
+
+    def test_analysis_jobs_remains_monkeypatchable(self, monkeypatch):
+        """``analyze_router.analysis_jobs`` 가 module-level 표면으로 남아 있어
+        기존 ``monkeypatch.setattr(analyze_router, 'analysis_jobs', {})`` 가
+        그대로 동작해야 한다 (Wave 3-D 회귀 차단).
+        """
+        # 라우터의 분석 잡 dict 를 격리된 dict 로 monkeypatch
+        isolated = {}
+        monkeypatch.setattr(analyze_router, "_USE_CELERY", False)
+        monkeypatch.setattr(analyze_router, "_run_analysis", lambda *a, **kw: None)
+        monkeypatch.setattr(analyze_router, "analysis_jobs", isolated)
+
+        r = client.post(
+            "/api/analyze",
+            json={"code": "y=2\n", "filename": "m.py", "use_llm": False},
+            headers=_AUTH_HEADERS,
+        )
+        assert r.status_code == 200
+        new_id = r.json()["job_id"]
+        # 라우터가 module-level dict 를 그대로 사용 → monkeypatch 된 dict 에 기록
+        assert new_id in isolated
+
+
+# ============================================================
 # Wave 2-P — REPORTS_DIR 늦은 바인딩 (late binding)
 # ============================================================
 

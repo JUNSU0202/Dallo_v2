@@ -49,6 +49,14 @@ Wave 3-A — Celery detector 서비스 분리:
   - 라우터 핸들러는 모듈 글로벌 ``_celery`` / ``run_analysis_task`` 를
     그대로 참조하므로, 기존 테스트가 라우터 모듈에 monkeypatch 하던 표면은
     그대로 작동한다.
+
+Wave 3-D — analysis_jobs 메모리 폴백 정리:
+  - 메모리 폴백 dict ``analysis_jobs`` 가 무한 증가할 위험을 줄이기 위해
+    ``api.services.analysis_jobs_store.cleanup`` 으로 TTL/캡 정리를 위임한다.
+  - 정리 시점은 (1) 새 잡을 메모리에 삽입하기 직전, (2) 잡 상태 조회 직전.
+    두 경우 모두 막 만들 잡 / 조회 중인 잡은 ``exclude_ids`` 로 보호된다.
+  - ``analysis_jobs`` 자체는 module-level dict 로 유지되어 기존
+    ``monkeypatch.setattr(analyze_router, 'analysis_jobs', {})`` 호환을 보존.
 """
 
 from __future__ import annotations
@@ -60,6 +68,7 @@ from pydantic import BaseModel
 
 from api.auth import verify_api_key
 from api.dto.responses import AnalyzeStartResponse
+from api.services import analysis_jobs_store as _jobs_store
 from api.services import analysis_pipeline as _pipeline_service
 from api.services import celery_detector as _celery_detector
 
@@ -159,6 +168,8 @@ def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
 
     # Celery 미사용 fallback — 기존 메모리 방식
     job_id = _pipeline_service.make_job_id()
+    # 새 잡 삽입 직전 TTL/캡 정리 — 막 만든 job_id 는 보호.
+    _jobs_store.cleanup(analysis_jobs, exclude_ids=(job_id,))
     analysis_jobs[job_id] = _pipeline_service.build_initial_job_meta(
         job_id=job_id,
         filename=req.filename,
@@ -206,6 +217,9 @@ def get_celery_task_status(task_id: str):
 @router.get("/api/analyze/{job_id}", dependencies=[Depends(verify_api_key)])
 def get_analysis_status(job_id: str):
     """분석 작업 상태를 조회합니다. (메모리 방식 + Celery 자동 감지)"""
+    # 조회 직전 TTL/캡 정리 — 조회 중인 job_id 는 보호. 정리 헬퍼는
+    # 시간/IO 가 없는 in-memory 작업이라 hot path 에서도 부담이 없다.
+    _jobs_store.cleanup(analysis_jobs, exclude_ids=(job_id,))
     # 메모리에서 먼저 조회
     job = analysis_jobs.get(job_id)
     if job:
@@ -244,6 +258,8 @@ async def analyze_file(file: UploadFile = File(...), use_llm: bool = Form(True))
 
     # 동기 실행 (파일 업로드는 즉시 결과 반환)
     job_id = _pipeline_service.make_job_id()
+    # 새 잡 삽입 직전 TTL/캡 정리 — 막 만든 job_id 는 보호.
+    _jobs_store.cleanup(analysis_jobs, exclude_ids=(job_id,))
     analysis_jobs[job_id] = _pipeline_service.build_upload_job_meta(
         job_id=job_id, filename=req.filename,
     )
