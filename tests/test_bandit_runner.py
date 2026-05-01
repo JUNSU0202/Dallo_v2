@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from analyzer.bandit_runner import BanditRunner, run_bandit_analysis
+from analyzer.static_tool_command_runner import CommandResult
 
 
 class TestBanditRunner:
@@ -97,14 +98,18 @@ class TestBanditRunner:
         assert parsed["results"][0]["test_id"] == "B608"
 
     def test_uses_quiet_flag(self):
-        """subprocess 호출 시 -q 플래그가 포함되는지"""
-        runner = BanditRunner()
-        with patch("analyzer.bandit_runner.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                stdout='{"results": [], "metrics": {"_totals": {}}}',
-                stderr="",
-                returncode=0,
-            )
-            runner.run("test_targets/")
-            called_cmd = mock_run.call_args[0][0]
-            assert "-q" in called_cmd, f"-q 플래그 누락: {called_cmd}"
+        """외부 명령 호출 시 -q 플래그가 포함되는지 (어댑터 더블 사용)."""
+        captured: dict = {}
+
+        class _FakeRunner:
+            def run(self, argv, *, cwd=None, timeout=120):
+                captured["argv"] = list(argv)
+                return CommandResult(
+                    stdout='{"results": [], "metrics": {"_totals": {}}}',
+                    stderr="",
+                    returncode=0,
+                )
+
+        runner = BanditRunner(runner=_FakeRunner())
+        runner.run("test_targets/")
+        assert "-q" in captured["argv"], f"-q 플래그 누락: {captured['argv']}"

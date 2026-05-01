@@ -12,6 +12,8 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional
 from pathlib import Path
 
+from analyzer.static_tool_command_runner import StaticToolCommandRunner
+
 
 @dataclass
 class Vulnerability:
@@ -64,10 +66,20 @@ class AnalysisResult:
 
 
 class BanditRunner:
-    """Bandit 정적 분석 도구 실행기"""
+    """Bandit 정적 분석 도구 실행기.
 
-    def __init__(self, config_path: Optional[str] = None):
+    외부 도구(``bandit``) 호출은 ``StaticToolCommandRunner`` 어댑터에
+    위임한다. 테스트는 생성자에 더블을 주입해 실제 subprocess 호출을 막을
+    수 있다 (Wave 3-G).
+    """
+
+    def __init__(
+        self,
+        config_path: Optional[str] = None,
+        runner: Optional[StaticToolCommandRunner] = None,
+    ):
         self.config_path = config_path or "config/bandit.yml"
+        self._runner = runner or StaticToolCommandRunner()
 
     def run(self, target_path: str, output_path: Optional[str] = None) -> AnalysisResult:
         """
@@ -98,13 +110,8 @@ class BanditRunner:
 
         try:
             # Bandit은 취약점 발견 시 exit code 1을 반환하므로
-            # check=False로 실행
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
+            # check=False로 실행 (어댑터는 returncode 를 그대로 반환)
+            proc = self._runner.run(cmd, timeout=120)
 
             # JSON 파싱
             if proc.stdout:

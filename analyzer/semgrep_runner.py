@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from analyzer.bandit_runner import Vulnerability, AnalysisResult
+from analyzer.static_tool_command_runner import StaticToolCommandRunner
 
 
 # 파일 확장자 → 언어 매핑
@@ -51,17 +52,28 @@ SEVERITY_MAP = {
 
 
 class SemgrepRunner:
-    """Semgrep 정적 분석 도구 실행기 (다중 언어 지원)"""
+    """Semgrep 정적 분석 도구 실행기 (다중 언어 지원).
 
-    def __init__(self, config: str = "auto"):
+    외부 도구(``semgrep``) 호출은 ``StaticToolCommandRunner`` 어댑터에
+    위임한다. 테스트는 생성자에 더블을 주입해 실제 subprocess 호출을 막을
+    수 있다 (Wave 3-G).
+    """
+
+    def __init__(
+        self,
+        config: str = "auto",
+        runner: Optional[StaticToolCommandRunner] = None,
+    ):
         """
         Args:
             config: Semgrep 룰 설정
                     - "auto": Semgrep 자동 감지 룰
                     - "p/security-audit": 보안 감사 룰셋
                     - "p/owasp-top-ten": OWASP Top 10 룰셋
+            runner: 외부 명령 실행 어댑터(테스트용 더블 주입 가능)
         """
         self.config = config
+        self._runner = runner or StaticToolCommandRunner()
 
     def detect_language(self, file_path: str) -> str:
         """파일 확장자로 언어를 감지합니다."""
@@ -90,12 +102,7 @@ class SemgrepRunner:
         ]
 
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
+            proc = self._runner.run(cmd, timeout=120)
 
             output = proc.stdout
             if not output:
