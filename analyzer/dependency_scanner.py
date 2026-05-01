@@ -26,6 +26,8 @@ import logging
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
+from analyzer.dependency_command_runner import DependencyCommandRunner
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,7 +80,15 @@ class DependencyScanResult:
 
 
 class DependencyScanner:
-    """프로젝트 의존성 취약점 스캐너"""
+    """프로젝트 의존성 취약점 스캐너.
+
+    외부 도구(pip-audit / npm) 호출은 ``DependencyCommandRunner`` 어댑터에
+    위임한다. 테스트는 생성자에 더블을 주입해 실제 subprocess 호출을 막을
+    수 있다 (Wave 3-F).
+    """
+
+    def __init__(self, runner: Optional[DependencyCommandRunner] = None):
+        self._runner = runner or DependencyCommandRunner()
 
     def scan(self, project_path: str) -> list[DependencyScanResult]:
         """
@@ -142,10 +152,11 @@ class DependencyScanner:
             pkg_path = os.path.join(tmp_dir, "package.json")
             with open(pkg_path, "w", encoding="utf-8") as f:
                 f.write(package_json_text)
-            # npm install 실행
-            subprocess.run(
+            # npm install 실행 (외부 명령 호출은 어댑터 경유)
+            self._runner.run(
                 ["npm", "install", "--package-lock-only"],
-                cwd=tmp_dir, capture_output=True, timeout=60,
+                cwd=tmp_dir,
+                timeout=60,
             )
             return self._scan_npm(tmp_dir)
         finally:
@@ -168,12 +179,7 @@ class DependencyScanner:
                 "--output", "-",
             ]
 
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
+            proc = self._runner.run(cmd, timeout=120)
 
             output = proc.stdout
             if not output:
@@ -274,13 +280,7 @@ class DependencyScanner:
 
         try:
             cmd = ["npm", "audit", "--json"]
-            proc = subprocess.run(
-                cmd,
-                cwd=project_path,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
+            proc = self._runner.run(cmd, cwd=project_path, timeout=120)
 
             output = proc.stdout
             if not output:
