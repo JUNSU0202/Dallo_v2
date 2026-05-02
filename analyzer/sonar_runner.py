@@ -12,11 +12,15 @@ Docker 환경에서 SonarQube가 실행 중이어야 합니다.
 
 import os
 import time
-import requests
 from typing import Optional
 from dataclasses import dataclass
 
 from analyzer.bandit_runner import Vulnerability, AnalysisResult
+from analyzer.sonar_http_client import (
+    HttpConnectionError,
+    HttpRequestError,
+    SonarHttpClient,
+)
 from analyzer.static_tool_command_runner import StaticToolCommandRunner
 
 
@@ -32,15 +36,17 @@ class SonarRunner:
     """SonarQube 분석 실행 및 결과 조회.
 
     ``sonar-scanner`` subprocess 호출은 ``StaticToolCommandRunner`` 어댑터에
-    위임한다(Wave 3-H). 테스트는 생성자에 더블을 주입해 실제 subprocess 호출을
-    막을 수 있다. 본 모듈은 argv 구성, 한국어 에러 메시지 분기, HTTP API
-    호출에만 집중한다.
+    위임한다(Wave 3-H). REST API HTTP 호출은 ``SonarHttpClient`` 어댑터에
+    위임한다(Wave 3-I). 테스트는 생성자에 더블을 주입해 실제 subprocess 호출
+    이나 네트워크 I/O 를 막을 수 있다. 본 모듈은 argv 구성, URL 구성, 응답
+    파싱, 한국어 에러 메시지 분기에만 집중한다.
     """
 
     def __init__(
         self,
         config: Optional[SonarConfig] = None,
         scanner_runner: Optional[StaticToolCommandRunner] = None,
+        http_client: Optional[SonarHttpClient] = None,
     ):
         self.config = config or SonarConfig(
             token=os.environ.get("SONAR_TOKEN", ""),
@@ -48,16 +54,17 @@ class SonarRunner:
         self.base_url = self.config.host_url
         self.auth = (self.config.token, "")
         self._scanner_runner = scanner_runner or StaticToolCommandRunner()
+        self._http_client = http_client or SonarHttpClient()
 
     def is_available(self) -> bool:
         """SonarQube 서버가 실행 중인지 확인"""
         try:
-            resp = requests.get(
+            resp = self._http_client.get(
                 f"{self.base_url}/api/system/status",
                 timeout=5,
             )
             return resp.status_code == 200 and resp.json().get("status") == "UP"
-        except requests.ConnectionError:
+        except HttpConnectionError:
             return False
 
     def run_scan(self, project_path: str = ".") -> bool:
@@ -106,7 +113,7 @@ class SonarRunner:
             params["severities"] = severity
 
         try:
-            resp = requests.get(
+            resp = self._http_client.get(
                 f"{self.base_url}/api/issues/search",
                 params=params,
                 auth=self.auth,
@@ -114,7 +121,7 @@ class SonarRunner:
             )
             resp.raise_for_status()
             data = resp.json()
-        except requests.RequestException as e:
+        except HttpRequestError as e:
             result.error = str(e)
             return result
 
@@ -165,7 +172,7 @@ class SonarRunner:
         start = time.time()
         while time.time() - start < timeout:
             try:
-                resp = requests.get(
+                resp = self._http_client.get(
                     f"{self.base_url}/api/ce/activity",
                     params={
                         "component": self.config.project_key,
@@ -178,7 +185,7 @@ class SonarRunner:
                 tasks = resp.json().get("tasks", [])
                 if tasks and tasks[0].get("status") == "SUCCESS":
                     return True
-            except requests.RequestException:
+            except HttpRequestError:
                 pass
             time.sleep(5)
         return False
