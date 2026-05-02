@@ -1,21 +1,24 @@
-"""SonarQube scanner subprocess 어댑터 단위 테스트.
+"""SonarQube runner 어댑터 단위 테스트.
 
 Wave 3-H: ``analyzer/sonar_runner.py`` 의 ``run_scan()`` 이 직접 호출하던
 ``subprocess.run([...])`` 외부 도구 실행 책임을 ``StaticToolCommandRunner``
 어댑터로 분리한 동작을 검증한다.
+Wave 3-I: ``is_available`` / ``get_issues`` / ``wait_for_analysis`` 가 직접
+호출하던 ``requests.get(...)`` HTTP 경계를 ``SonarHttpClient`` 어댑터로
+분리한 동작을 검증한다.
 
-- ``SonarRunner`` 는 생성자에 더블(``scanner_runner``)을 주입받으면 실제
-  ``subprocess`` 호출 없이 동작해야 한다.
+- ``SonarRunner`` 는 생성자에 더블(``scanner_runner`` / ``http_client``)을
+  주입받으면 실제 ``subprocess`` / ``requests`` 호출 없이 동작해야 한다.
 - ``run_scan()`` 의 argv 형태(project key, host url, project base dir)는
   유지되어야 하고, timeout 은 300초 이다.
 - ``returncode == 0`` 은 True, 그 외는 False 를 반환한다.
 - ``FileNotFoundError`` 는 기존 동작대로 False 반환 + 한국어 안내 출력으로
   보존된다.
-- HTTP API(``is_available`` / ``get_issues`` / ``wait_for_analysis``)는 이번
-  wave 범위 밖(향후 별도 어댑터)이지만, 더블 ``requests.get`` 으로 기존
-  파싱/에러 분기가 그대로 살아있는지 가볍게 회귀 검증한다.
-- AST: ``sonar_runner.py`` 본문에 직접 ``subprocess.run`` 호출이 없어야 하고,
-  ``shell=True`` 도 어디에도 없어야 한다.
+- ``is_available`` / ``get_issues`` / ``wait_for_analysis`` 의 URL/params/
+  auth/timeout 위임 형태와 응답 파싱/에러 분기를 회귀 검증한다.
+- AST: ``sonar_runner.py`` 본문에 직접 ``subprocess.run`` 호출도, 직접
+  ``requests.get`` 호출도 없어야 하고, ``shell=True`` 도 어디에도 없어야
+  한다.
 """
 
 from __future__ import annotations
@@ -26,6 +29,11 @@ from typing import Any, Optional
 
 import pytest
 
+from analyzer.sonar_http_client import (
+    HttpConnectionError,
+    HttpRequestError,
+    SonarHttpClient,
+)
 from analyzer.sonar_runner import SonarConfig, SonarRunner
 from analyzer.static_tool_command_runner import (
     CommandResult,
@@ -34,7 +42,7 @@ from analyzer.static_tool_command_runner import (
 
 
 # ============================================================
-# 모듈 surface — shell 금지 / 직접 subprocess.run 금지
+# 모듈 surface — shell 금지 / 직접 subprocess.run 금지 / 직접 requests.get 금지
 # ============================================================
 
 
@@ -52,15 +60,15 @@ def _calls_with_shell_true(tree: ast.AST) -> list[ast.Call]:
     return out
 
 
-def _direct_subprocess_run_calls(tree: ast.AST) -> list[int]:
+def _direct_attr_calls(tree: ast.AST, base: str, attr: str) -> list[int]:
     lines: list[int] = []
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "run"
+            and node.func.attr == attr
             and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "subprocess"
+            and node.func.value.id == base
         ):
             lines.append(node.lineno)
     return lines
@@ -72,8 +80,26 @@ class TestSonarRunnerModuleSurface:
         from analyzer import sonar_runner as mod
 
         tree = ast.parse(inspect.getsource(mod))
-        assert _direct_subprocess_run_calls(tree) == [], (
+        assert _direct_attr_calls(tree, "subprocess", "run") == [], (
             "subprocess.run 호출은 StaticToolCommandRunner 어댑터로 이동되어야 함"
+        )
+
+    def test_sonar_runner_no_direct_requests_get(self):
+        """``sonar_runner.py`` 본문에 ``requests.get(...)`` 직접 호출 금지."""
+        from analyzer import sonar_runner as mod
+
+        tree = ast.parse(inspect.getsource(mod))
+        assert _direct_attr_calls(tree, "requests", "get") == [], (
+            "requests.get 호출은 SonarHttpClient 어댑터로 이동되어야 함"
+        )
+
+    def test_sonar_runner_does_not_import_requests_module(self):
+        """HTTP 경계가 어댑터로 분리되었으므로 ``requests`` 직접 import 도 사라져야 한다."""
+        from analyzer import sonar_runner as mod
+
+        assert not hasattr(mod, "requests"), (
+            "sonar_runner 는 requests 를 직접 import 하지 않아야 함"
+            " (HTTP 어댑터 경유)"
         )
 
     def test_sonar_runner_no_shell_true(self):
@@ -98,11 +124,18 @@ class TestSonarRunnerModuleSurface:
         from analyzer import static_tool_command_runner as mod
 
         tree = ast.parse(inspect.getsource(mod))
-        assert len(_direct_subprocess_run_calls(tree)) == 1
+        assert len(_direct_attr_calls(tree, "subprocess", "run")) == 1
+
+    def test_sonar_http_client_owns_requests_get(self):
+        """HTTP 어댑터 모듈이 정확히 한 군데에서 ``requests.get`` 을 호출한다."""
+        from analyzer import sonar_http_client as mod
+
+        tree = ast.parse(inspect.getsource(mod))
+        assert len(_direct_attr_calls(tree, "requests", "get")) == 1
 
 
 # ============================================================
-# 더블 Runner — argv / timeout 호출 이력을 보관
+# 더블 Runner / Http client — 호출 이력을 보관
 # ============================================================
 
 
@@ -137,8 +170,60 @@ class _RecordingRunner:
         return CommandResult(stdout="", stderr="", returncode=0)
 
 
+class _FakeResponse:
+    def __init__(
+        self,
+        *,
+        status_code: int = 200,
+        json_data: Optional[dict] = None,
+        raise_for_status: Optional[BaseException] = None,
+    ):
+        self.status_code = status_code
+        self._json = json_data or {}
+        self._raise = raise_for_status
+
+    def json(self):
+        return self._json
+
+    def raise_for_status(self):
+        if self._raise is not None:
+            raise self._raise
+
+
+class _RecordingHttpClient:
+    """SonarHttpClient 더블 — get(...) 호출 이력 보관 + 사전 등록 응답/예외 반환."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+        self.responses: list[Any] = []
+
+    def queue(self, response: Any):
+        self.responses.append(response)
+
+    def queue_exc(self, exc: BaseException):
+        self.responses.append(exc)
+
+    def get(
+        self,
+        url: str,
+        *,
+        params: Optional[dict] = None,
+        auth: Optional[tuple] = None,
+        timeout: int = 30,
+    ):
+        self.calls.append(
+            {"url": url, "params": params, "auth": auth, "timeout": timeout}
+        )
+        if not self.responses:
+            return _FakeResponse(status_code=200, json_data={})
+        item = self.responses.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
 # ============================================================
-# run_scan: 실제 subprocess 미사용 + argv 형태 보존
+# run_scan: 실제 subprocess / 실제 HTTP 미사용 + argv 형태 보존
 # ============================================================
 
 
@@ -162,28 +247,38 @@ class TestRunScanDoesNotCallRealSubprocess:
                 project_key="proj-x",
             ),
             scanner_runner=runner,
+            http_client=_RecordingHttpClient(),
         )
 
         ok = sonar.run_scan("/tmp/repo")
         assert ok is True
         assert len(runner.calls) == 1
 
-    def test_run_scan_does_not_touch_real_requests_get(self, monkeypatch):
-        """run_scan() 경로는 HTTP API 를 절대 건드리지 않는다."""
+    def test_run_scan_does_not_touch_real_http(self, monkeypatch):
+        """run_scan() 경로는 HTTP 어댑터 경계를 절대 건드리지 않는다."""
 
         def _boom_http(*a, **kw):
-            raise AssertionError("run_scan() 은 requests.get 을 호출하면 안 됩니다")
+            raise AssertionError("run_scan() 은 HTTP 어댑터를 호출하면 안 됩니다")
 
-        monkeypatch.setattr("analyzer.sonar_runner.requests.get", _boom_http)
+        # 실제 requests.get 도 차단해서 이중 안전장치를 둔다.
+        monkeypatch.setattr(
+            "analyzer.sonar_http_client.requests.get", _boom_http
+        )
+
+        http = _RecordingHttpClient()
+        # 만약 호출되면 즉시 실패하도록 큐에 예외를 넣어둔다.
+        http.queue_exc(AssertionError("run_scan() 은 http_client.get 을 호출하면 안 됩니다"))
 
         runner = _RecordingRunner()
         runner.queue(returncode=0)
         sonar = SonarRunner(
             config=SonarConfig(host_url="http://sonar.test", token="x"),
             scanner_runner=runner,
+            http_client=http,
         )
 
         assert sonar.run_scan("/tmp/repo") is True
+        assert http.calls == []
 
 
 class TestRunScanArgvShape:
@@ -197,6 +292,7 @@ class TestRunScanArgvShape:
                 project_key="proj-x",
             ),
             scanner_runner=runner,
+            http_client=_RecordingHttpClient(),
         )
         sonar.run_scan("/tmp/repo")
 
@@ -215,6 +311,7 @@ class TestRunScanArgvShape:
         sonar = SonarRunner(
             config=SonarConfig(token="x"),
             scanner_runner=runner,
+            http_client=_RecordingHttpClient(),
         )
         sonar.run_scan()
 
@@ -228,6 +325,7 @@ class TestRunScanArgvShape:
         sonar = SonarRunner(
             config=SonarConfig(token="x"),
             scanner_runner=runner,
+            http_client=_RecordingHttpClient(),
         )
         sonar.run_scan("/tmp/repo")
 
@@ -248,7 +346,9 @@ class TestRunScanReturnValue:
         runner = _RecordingRunner()
         runner.queue(returncode=0)
         sonar = SonarRunner(
-            config=SonarConfig(token=""), scanner_runner=runner
+            config=SonarConfig(token=""),
+            scanner_runner=runner,
+            http_client=_RecordingHttpClient(),
         )
         assert sonar.run_scan("/tmp/repo") is True
 
@@ -256,7 +356,9 @@ class TestRunScanReturnValue:
         runner = _RecordingRunner()
         runner.queue(returncode=2, stderr="scan failed")
         sonar = SonarRunner(
-            config=SonarConfig(token=""), scanner_runner=runner
+            config=SonarConfig(token=""),
+            scanner_runner=runner,
+            http_client=_RecordingHttpClient(),
         )
         assert sonar.run_scan("/tmp/repo") is False
 
@@ -264,7 +366,9 @@ class TestRunScanReturnValue:
         runner = _RecordingRunner()
         runner.queue_exc(FileNotFoundError("sonar-scanner"))
         sonar = SonarRunner(
-            config=SonarConfig(token=""), scanner_runner=runner
+            config=SonarConfig(token=""),
+            scanner_runner=runner,
+            http_client=_RecordingHttpClient(),
         )
 
         ok = sonar.run_scan("/tmp/repo")
@@ -288,7 +392,9 @@ class TestBackwardCompatibility:
         monkeypatch.delenv("SONAR_TOKEN", raising=False)
         sonar = SonarRunner()
         assert hasattr(sonar, "_scanner_runner")
+        assert hasattr(sonar, "_http_client")
         assert isinstance(sonar._scanner_runner, StaticToolCommandRunner)
+        assert isinstance(sonar._http_client, SonarHttpClient)
         assert sonar.config.token == ""
         assert sonar.base_url == "http://localhost:9000"
 
@@ -297,56 +403,105 @@ class TestBackwardCompatibility:
         sonar = SonarRunner(config=cfg)
         assert sonar.config is cfg
         assert isinstance(sonar._scanner_runner, StaticToolCommandRunner)
+        assert isinstance(sonar._http_client, SonarHttpClient)
+
+    def test_config_and_scanner_runner_constructor_still_works(self):
+        runner = _RecordingRunner()
+        sonar = SonarRunner(
+            config=SonarConfig(token=""),
+            scanner_runner=runner,
+        )
+        assert sonar._scanner_runner is runner
+        # http_client 는 기본값으로 채워진다
+        assert isinstance(sonar._http_client, SonarHttpClient)
 
 
 # ============================================================
-# HTTP 메서드 회귀 — 더블 requests.get 으로 기존 분기 보존 확인
+# is_available — URL / 응답 파싱 / ConnectionError 분기 보존
 # ============================================================
-
-
-class _FakeResponse:
-    def __init__(
-        self,
-        *,
-        status_code: int = 200,
-        json_data: Optional[dict] = None,
-        raise_for_status: Optional[BaseException] = None,
-    ):
-        self.status_code = status_code
-        self._json = json_data or {}
-        self._raise = raise_for_status
-
-    def json(self):
-        return self._json
-
-    def raise_for_status(self):
-        if self._raise is not None:
-            raise self._raise
 
 
 class TestIsAvailable:
-    def test_is_available_true_when_status_up(self, monkeypatch):
-        def _fake_get(url, **kw):
-            assert url.endswith("/api/system/status")
-            return _FakeResponse(status_code=200, json_data={"status": "UP"})
+    def test_is_available_true_when_status_up(self):
+        http = _RecordingHttpClient()
+        http.queue(_FakeResponse(status_code=200, json_data={"status": "UP"}))
+        sonar = SonarRunner(
+            config=SonarConfig(host_url="http://x", token=""),
+            http_client=http,
+        )
 
-        monkeypatch.setattr("analyzer.sonar_runner.requests.get", _fake_get)
-        sonar = SonarRunner(config=SonarConfig(host_url="http://x", token=""))
         assert sonar.is_available() is True
+        assert len(http.calls) == 1
+        call = http.calls[0]
+        assert call["url"] == "http://x/api/system/status"
+        assert call["timeout"] == 5
 
-    def test_is_available_false_when_connection_error(self, monkeypatch):
-        import requests as _requests
+    def test_is_available_false_when_status_not_up(self):
+        http = _RecordingHttpClient()
+        http.queue(_FakeResponse(status_code=200, json_data={"status": "DOWN"}))
+        sonar = SonarRunner(
+            config=SonarConfig(host_url="http://x", token=""),
+            http_client=http,
+        )
+        assert sonar.is_available() is False
 
-        def _raise(url, **kw):
-            raise _requests.ConnectionError("nope")
+    def test_is_available_false_when_non_200(self):
+        http = _RecordingHttpClient()
+        http.queue(_FakeResponse(status_code=503, json_data={"status": "UP"}))
+        sonar = SonarRunner(
+            config=SonarConfig(host_url="http://x", token=""),
+            http_client=http,
+        )
+        assert sonar.is_available() is False
 
-        monkeypatch.setattr("analyzer.sonar_runner.requests.get", _raise)
-        sonar = SonarRunner(config=SonarConfig(host_url="http://x", token=""))
+    def test_is_available_false_when_connection_error(self):
+        http = _RecordingHttpClient()
+        http.queue_exc(HttpConnectionError("nope"))
+        sonar = SonarRunner(
+            config=SonarConfig(host_url="http://x", token=""),
+            http_client=http,
+        )
         assert sonar.is_available() is False
 
 
+# ============================================================
+# get_issues — params / auth / timeout 위임 + 응답 파싱 + 에러 분기
+# ============================================================
+
+
 class TestGetIssues:
-    def test_get_issues_parses_severity_mapping(self, monkeypatch):
+    def test_get_issues_passes_url_params_auth_timeout(self):
+        http = _RecordingHttpClient()
+        http.queue(_FakeResponse(status_code=200, json_data={"issues": []}))
+        sonar = SonarRunner(
+            config=SonarConfig(host_url="http://x", token="", project_key="proj-x"),
+            http_client=http,
+        )
+
+        result = sonar.get_issues(severity="MAJOR")
+
+        assert result.total_issues == 0
+        assert len(http.calls) == 1
+        call = http.calls[0]
+        assert call["url"] == "http://x/api/issues/search"
+        assert call["timeout"] == 30
+        assert call["auth"] == ("", "")
+        assert call["params"]["componentKeys"] == "proj-x"
+        assert call["params"]["ps"] == 100
+        assert call["params"]["types"] == "VULNERABILITY,BUG,CODE_SMELL"
+        assert call["params"]["severities"] == "MAJOR"
+
+    def test_get_issues_omits_severities_when_not_filtered(self):
+        http = _RecordingHttpClient()
+        http.queue(_FakeResponse(status_code=200, json_data={"issues": []}))
+        sonar = SonarRunner(
+            config=SonarConfig(host_url="http://x", token="", project_key="p"),
+            http_client=http,
+        )
+        sonar.get_issues()
+        assert "severities" not in http.calls[0]["params"]
+
+    def test_get_issues_parses_severity_mapping(self):
         payload = {
             "issues": [
                 {
@@ -372,13 +527,11 @@ class TestGetIssues:
                 },
             ]
         }
-
-        def _fake_get(url, **kw):
-            return _FakeResponse(status_code=200, json_data=payload)
-
-        monkeypatch.setattr("analyzer.sonar_runner.requests.get", _fake_get)
+        http = _RecordingHttpClient()
+        http.queue(_FakeResponse(status_code=200, json_data=payload))
         sonar = SonarRunner(
-            config=SonarConfig(host_url="http://x", token="", project_key="proj-x")
+            config=SonarConfig(host_url="http://x", token="", project_key="proj-x"),
+            http_client=http,
         )
         result = sonar.get_issues()
 
@@ -391,47 +544,87 @@ class TestGetIssues:
         assert "src/a.py" in paths
         assert "src/b.py" in paths
 
-    def test_get_issues_request_exception_sets_error(self, monkeypatch):
-        import requests as _requests
-
-        def _raise(url, **kw):
-            raise _requests.RequestException("boom")
-
-        monkeypatch.setattr("analyzer.sonar_runner.requests.get", _raise)
+    def test_get_issues_request_exception_sets_error(self):
+        http = _RecordingHttpClient()
+        http.queue_exc(HttpRequestError("boom"))
         sonar = SonarRunner(
-            config=SonarConfig(host_url="http://x", token="", project_key="p")
+            config=SonarConfig(host_url="http://x", token="", project_key="p"),
+            http_client=http,
         )
         result = sonar.get_issues()
         assert result.total_issues == 0
         assert result.error == "boom"
 
+    def test_get_issues_raise_for_status_propagates_to_error(self):
+        """``raise_for_status()`` 가 ``HttpRequestError`` 를 던지면 result.error 에 잡힌다."""
+        http = _RecordingHttpClient()
+        http.queue(
+            _FakeResponse(
+                status_code=500,
+                json_data={"issues": []},
+                raise_for_status=HttpRequestError("500"),
+            )
+        )
+        sonar = SonarRunner(
+            config=SonarConfig(host_url="http://x", token="", project_key="p"),
+            http_client=http,
+        )
+        result = sonar.get_issues()
+        assert result.total_issues == 0
+        assert result.error == "500"
+
+
+# ============================================================
+# wait_for_analysis — params / auth / timeout 위임 + sleep 미차단
+# ============================================================
+
 
 class TestWaitForAnalysis:
-    def test_wait_returns_true_on_success(self, monkeypatch):
-        def _fake_get(url, **kw):
-            return _FakeResponse(
-                status_code=200,
-                json_data={"tasks": [{"status": "SUCCESS"}]},
-            )
+    def test_wait_passes_url_params_auth_timeout(self, monkeypatch):
+        http = _RecordingHttpClient()
+        http.queue(
+            _FakeResponse(status_code=200, json_data={"tasks": [{"status": "SUCCESS"}]})
+        )
+        monkeypatch.setattr("analyzer.sonar_runner.time.sleep", lambda s: None)
 
-        monkeypatch.setattr("analyzer.sonar_runner.requests.get", _fake_get)
+        sonar = SonarRunner(
+            config=SonarConfig(host_url="http://x", token="", project_key="p"),
+            http_client=http,
+        )
+        assert sonar.wait_for_analysis(timeout=1) is True
+
+        call = http.calls[0]
+        assert call["url"] == "http://x/api/ce/activity"
+        assert call["timeout"] == 10
+        assert call["auth"] == ("", "")
+        assert call["params"]["component"] == "p"
+        assert call["params"]["ps"] == 1
+        assert call["params"]["onlyCurrents"] == "true"
+
+    def test_wait_returns_true_on_success(self, monkeypatch):
+        http = _RecordingHttpClient()
+        http.queue(
+            _FakeResponse(status_code=200, json_data={"tasks": [{"status": "SUCCESS"}]})
+        )
         # sleep 이 호출되더라도 즉시 반환되도록 패치 (테스트 시간 단축).
         monkeypatch.setattr("analyzer.sonar_runner.time.sleep", lambda s: None)
 
         sonar = SonarRunner(
-            config=SonarConfig(host_url="http://x", token="", project_key="p")
+            config=SonarConfig(host_url="http://x", token="", project_key="p"),
+            http_client=http,
         )
         assert sonar.wait_for_analysis(timeout=1) is True
 
     def test_wait_returns_false_on_timeout(self, monkeypatch):
         # 항상 PENDING 상태만 반환 → timeout 까지 가서 False
-        def _fake_get(url, **kw):
-            return _FakeResponse(
-                status_code=200,
-                json_data={"tasks": [{"status": "PENDING"}]},
+        http = _RecordingHttpClient()
+        for _ in range(5):
+            http.queue(
+                _FakeResponse(
+                    status_code=200,
+                    json_data={"tasks": [{"status": "PENDING"}]},
+                )
             )
-
-        monkeypatch.setattr("analyzer.sonar_runner.requests.get", _fake_get)
         monkeypatch.setattr("analyzer.sonar_runner.time.sleep", lambda s: None)
 
         # time.time 을 점프시켜 timeout 즉시 도달하도록 한다
@@ -441,9 +634,26 @@ class TestWaitForAnalysis:
         )
 
         sonar = SonarRunner(
-            config=SonarConfig(host_url="http://x", token="", project_key="p")
+            config=SonarConfig(host_url="http://x", token="", project_key="p"),
+            http_client=http,
         )
         assert sonar.wait_for_analysis(timeout=10) is False
+
+    def test_wait_swallows_request_exception_and_keeps_polling(self, monkeypatch):
+        """첫 응답이 ``HttpRequestError`` 면 삼키고 다음 폴링에서 SUCCESS 를 잡는다."""
+        http = _RecordingHttpClient()
+        http.queue_exc(HttpRequestError("transient"))
+        http.queue(
+            _FakeResponse(status_code=200, json_data={"tasks": [{"status": "SUCCESS"}]})
+        )
+        monkeypatch.setattr("analyzer.sonar_runner.time.sleep", lambda s: None)
+
+        sonar = SonarRunner(
+            config=SonarConfig(host_url="http://x", token="", project_key="p"),
+            http_client=http,
+        )
+        assert sonar.wait_for_analysis(timeout=10) is True
+        assert len(http.calls) == 2
 
 
 __all__: list[str] = []
