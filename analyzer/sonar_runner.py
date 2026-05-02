@@ -11,14 +11,13 @@ Docker 환경에서 SonarQube가 실행 중이어야 합니다.
 """
 
 import os
-import json
 import time
-import subprocess
 import requests
 from typing import Optional
 from dataclasses import dataclass
 
 from analyzer.bandit_runner import Vulnerability, AnalysisResult
+from analyzer.static_tool_command_runner import StaticToolCommandRunner
 
 
 @dataclass
@@ -30,14 +29,25 @@ class SonarConfig:
 
 
 class SonarRunner:
-    """SonarQube 분석 실행 및 결과 조회"""
+    """SonarQube 분석 실행 및 결과 조회.
 
-    def __init__(self, config: Optional[SonarConfig] = None):
+    ``sonar-scanner`` subprocess 호출은 ``StaticToolCommandRunner`` 어댑터에
+    위임한다(Wave 3-H). 테스트는 생성자에 더블을 주입해 실제 subprocess 호출을
+    막을 수 있다. 본 모듈은 argv 구성, 한국어 에러 메시지 분기, HTTP API
+    호출에만 집중한다.
+    """
+
+    def __init__(
+        self,
+        config: Optional[SonarConfig] = None,
+        scanner_runner: Optional[StaticToolCommandRunner] = None,
+    ):
         self.config = config or SonarConfig(
             token=os.environ.get("SONAR_TOKEN", ""),
         )
         self.base_url = self.config.host_url
         self.auth = (self.config.token, "")
+        self._scanner_runner = scanner_runner or StaticToolCommandRunner()
 
     def is_available(self) -> bool:
         """SonarQube 서버가 실행 중인지 확인"""
@@ -66,12 +76,7 @@ class SonarRunner:
 
         # sonar-project.properties 파일이 있으면 자동으로 읽음
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
+            proc = self._scanner_runner.run(cmd, timeout=300)
             return proc.returncode == 0
         except FileNotFoundError:
             print("[!] sonar-scanner가 설치되어 있지 않습니다.")
