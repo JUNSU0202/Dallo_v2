@@ -6,9 +6,13 @@ Wave 3-H: ``analyzer/sonar_runner.py`` 의 ``run_scan()`` 이 직접 호출하�
 Wave 3-I: ``is_available`` / ``get_issues`` / ``wait_for_analysis`` 가 직접
 호출하던 ``requests.get(...)`` HTTP 경계를 ``SonarHttpClient`` 어댑터로
 분리한 동작을 검증한다.
+Wave 3-J: ``wait_for_analysis()`` 가 직접 호출하던 ``time.time()`` /
+``time.sleep()`` polling/clock 의존성을 생성자 주입형 ``clock`` / ``sleeper``
+seam 으로 분리한 동작을 검증한다.
 
-- ``SonarRunner`` 는 생성자에 더블(``scanner_runner`` / ``http_client``)을
-  주입받으면 실제 ``subprocess`` / ``requests`` 호출 없이 동작해야 한다.
+- ``SonarRunner`` 는 생성자에 더블(``scanner_runner`` / ``http_client`` /
+  ``clock`` / ``sleeper``)을 주입받으면 실제 ``subprocess`` / ``requests`` /
+  실제 sleep 호출 없이 동작해야 한다.
 - ``run_scan()`` 의 argv 형태(project key, host url, project base dir)는
   유지되어야 하고, timeout 은 300초 이다.
 - ``returncode == 0`` 은 True, 그 외는 False 를 반환한다.
@@ -16,6 +20,9 @@ Wave 3-I: ``is_available`` / ``get_issues`` / ``wait_for_analysis`` 가 직접
   보존된다.
 - ``is_available`` / ``get_issues`` / ``wait_for_analysis`` 의 URL/params/
   auth/timeout 위임 형태와 응답 파싱/에러 분기를 회귀 검증한다.
+- ``wait_for_analysis()`` 는 주입된 ``clock`` / ``sleeper`` 를 사용해야
+  하며, 본문에서 ``time.time(`` / ``time.sleep(`` 을 직접 호출하지 않는다
+  (생성자 default 참조는 허용).
 - AST: ``sonar_runner.py`` 본문에 직접 ``subprocess.run`` 호출도, 직접
   ``requests.get`` 호출도 없어야 하고, ``shell=True`` 도 어디에도 없어야
   한다.
@@ -132,6 +139,29 @@ class TestSonarRunnerModuleSurface:
 
         tree = ast.parse(inspect.getsource(mod))
         assert len(_direct_attr_calls(tree, "requests", "get")) == 1
+
+    def test_wait_for_analysis_no_direct_time_calls(self):
+        """``wait_for_analysis`` 본문에 ``time.time()`` / ``time.sleep()`` 직접 호출 금지.
+
+        Wave 3-J: polling clock/sleeper 는 생성자에 주입된 seam 을 통해서만
+        사용해야 한다. 생성자 default 참조(``time.time`` / ``time.sleep`` 그
+        자체)는 호출이 아니라 attribute 참조이므로 본 검사를 통과한다.
+        """
+        from analyzer import sonar_runner as mod
+
+        tree = ast.parse(inspect.getsource(mod))
+        wait_fn = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "wait_for_analysis"
+        )
+        assert _direct_attr_calls(wait_fn, "time", "time") == [], (
+            "wait_for_analysis 는 time.time() 을 직접 호출하면 안 됨"
+            " (주입된 self._clock 사용)"
+        )
+        assert _direct_attr_calls(wait_fn, "time", "sleep") == [], (
+            "wait_for_analysis 는 time.sleep() 을 직접 호출하면 안 됨"
+            " (주입된 self._sleeper 사용)"
+        )
 
 
 # ============================================================
@@ -395,6 +425,9 @@ class TestBackwardCompatibility:
         assert hasattr(sonar, "_http_client")
         assert isinstance(sonar._scanner_runner, StaticToolCommandRunner)
         assert isinstance(sonar._http_client, SonarHttpClient)
+        # Wave 3-J: 기본 clock/sleeper 는 ``time`` 모듈의 함수로 채워진다.
+        assert callable(sonar._clock)
+        assert callable(sonar._sleeper)
         assert sonar.config.token == ""
         assert sonar.base_url == "http://localhost:9000"
 
@@ -404,6 +437,8 @@ class TestBackwardCompatibility:
         assert sonar.config is cfg
         assert isinstance(sonar._scanner_runner, StaticToolCommandRunner)
         assert isinstance(sonar._http_client, SonarHttpClient)
+        assert callable(sonar._clock)
+        assert callable(sonar._sleeper)
 
     def test_config_and_scanner_runner_constructor_still_works(self):
         runner = _RecordingRunner()
@@ -412,8 +447,10 @@ class TestBackwardCompatibility:
             scanner_runner=runner,
         )
         assert sonar._scanner_runner is runner
-        # http_client 는 기본값으로 채워진다
+        # http_client / clock / sleeper 는 기본값으로 채워진다
         assert isinstance(sonar._http_client, SonarHttpClient)
+        assert callable(sonar._clock)
+        assert callable(sonar._sleeper)
 
 
 # ============================================================
@@ -579,17 +616,41 @@ class TestGetIssues:
 # ============================================================
 
 
+class _FakeClock:
+    """단조 증가하는 가짜 clock — 호출마다 미리 등록된 ticks 를 순서대로 반환."""
+
+    def __init__(self, ticks: list[float]):
+        self._ticks = list(ticks)
+        self._last = ticks[-1] if ticks else 0.0
+
+    def __call__(self) -> float:
+        if self._ticks:
+            self._last = self._ticks.pop(0)
+        return self._last
+
+
+class _FakeSleeper:
+    """sleep 인자를 기록만 하고 실제 sleep 하지 않는 가짜 sleeper."""
+
+    def __init__(self):
+        self.calls: list[float] = []
+
+    def __call__(self, seconds: float) -> None:
+        self.calls.append(seconds)
+
+
 class TestWaitForAnalysis:
-    def test_wait_passes_url_params_auth_timeout(self, monkeypatch):
+    def test_wait_passes_url_params_auth_timeout(self):
         http = _RecordingHttpClient()
         http.queue(
             _FakeResponse(status_code=200, json_data={"tasks": [{"status": "SUCCESS"}]})
         )
-        monkeypatch.setattr("analyzer.sonar_runner.time.sleep", lambda s: None)
 
         sonar = SonarRunner(
             config=SonarConfig(host_url="http://x", token="", project_key="p"),
             http_client=http,
+            clock=_FakeClock([0.0, 0.0]),
+            sleeper=_FakeSleeper(),
         )
         assert sonar.wait_for_analysis(timeout=1) is True
 
@@ -601,21 +662,24 @@ class TestWaitForAnalysis:
         assert call["params"]["ps"] == 1
         assert call["params"]["onlyCurrents"] == "true"
 
-    def test_wait_returns_true_on_success(self, monkeypatch):
+    def test_wait_returns_true_on_success(self):
         http = _RecordingHttpClient()
         http.queue(
             _FakeResponse(status_code=200, json_data={"tasks": [{"status": "SUCCESS"}]})
         )
-        # sleep 이 호출되더라도 즉시 반환되도록 패치 (테스트 시간 단축).
-        monkeypatch.setattr("analyzer.sonar_runner.time.sleep", lambda s: None)
+        sleeper = _FakeSleeper()
 
         sonar = SonarRunner(
             config=SonarConfig(host_url="http://x", token="", project_key="p"),
             http_client=http,
+            clock=_FakeClock([0.0, 0.0]),
+            sleeper=sleeper,
         )
         assert sonar.wait_for_analysis(timeout=1) is True
+        # 첫 시도에서 SUCCESS 를 잡았으므로 sleep 은 호출되지 않는다.
+        assert sleeper.calls == []
 
-    def test_wait_returns_false_on_timeout(self, monkeypatch):
+    def test_wait_returns_false_on_timeout(self):
         # 항상 PENDING 상태만 반환 → timeout 까지 가서 False
         http = _RecordingHttpClient()
         for _ in range(5):
@@ -625,35 +689,166 @@ class TestWaitForAnalysis:
                     json_data={"tasks": [{"status": "PENDING"}]},
                 )
             )
-        monkeypatch.setattr("analyzer.sonar_runner.time.sleep", lambda s: None)
-
-        # time.time 을 점프시켜 timeout 즉시 도달하도록 한다
-        ticks = iter([1000.0, 1000.0, 9999.0])
-        monkeypatch.setattr(
-            "analyzer.sonar_runner.time.time", lambda: next(ticks, 9999.0)
-        )
+        sleeper = _FakeSleeper()
+        # start=1000.0, 두 번째 clock 호출에서 9999.0 으로 점프 → 즉시 timeout.
+        clock = _FakeClock([1000.0, 9999.0])
 
         sonar = SonarRunner(
             config=SonarConfig(host_url="http://x", token="", project_key="p"),
             http_client=http,
+            clock=clock,
+            sleeper=sleeper,
         )
         assert sonar.wait_for_analysis(timeout=10) is False
+        # 첫 루프에 진입조차 안 했으므로 HTTP 호출도, sleep 도 일어나지 않는다.
+        assert http.calls == []
+        assert sleeper.calls == []
 
-    def test_wait_swallows_request_exception_and_keeps_polling(self, monkeypatch):
+    def test_wait_swallows_request_exception_and_keeps_polling(self):
         """첫 응답이 ``HttpRequestError`` 면 삼키고 다음 폴링에서 SUCCESS 를 잡는다."""
         http = _RecordingHttpClient()
         http.queue_exc(HttpRequestError("transient"))
         http.queue(
             _FakeResponse(status_code=200, json_data={"tasks": [{"status": "SUCCESS"}]})
         )
-        monkeypatch.setattr("analyzer.sonar_runner.time.sleep", lambda s: None)
+        sleeper = _FakeSleeper()
 
         sonar = SonarRunner(
             config=SonarConfig(host_url="http://x", token="", project_key="p"),
             http_client=http,
+            clock=_FakeClock([0.0, 0.0, 0.0]),
+            sleeper=sleeper,
         )
         assert sonar.wait_for_analysis(timeout=10) is True
         assert len(http.calls) == 2
+        # 첫 시도 실패 후 1회 sleep, 두 번째 시도에서 SUCCESS.
+        assert sleeper.calls == [5]
+
+
+# ============================================================
+# Wave 3-J: polling clock / sleeper seam — 주입된 더블만 사용
+# ============================================================
+
+
+class TestPollingClockInjection:
+    def test_constructor_accepts_clock_and_sleeper(self):
+        clock = _FakeClock([0.0])
+        sleeper = _FakeSleeper()
+        sonar = SonarRunner(
+            config=SonarConfig(token=""),
+            clock=clock,
+            sleeper=sleeper,
+        )
+        assert sonar._clock is clock
+        assert sonar._sleeper is sleeper
+
+    def test_wait_uses_injected_sleeper_not_real_sleep(self, monkeypatch):
+        """주입된 ``sleeper`` 가 사용되며, 실제 ``time.sleep`` 은 호출되지 않는다."""
+
+        def _boom(*a, **kw):
+            raise AssertionError("실제 time.sleep 이 호출되면 안 됩니다")
+
+        # 모듈 레벨 ``time.sleep`` 을 차단 — 주입된 sleeper 만 호출되어야 한다.
+        monkeypatch.setattr("analyzer.sonar_runner.time.sleep", _boom)
+
+        http = _RecordingHttpClient()
+        http.queue(
+            _FakeResponse(status_code=200, json_data={"tasks": [{"status": "PENDING"}]})
+        )
+        http.queue(
+            _FakeResponse(status_code=200, json_data={"tasks": [{"status": "SUCCESS"}]})
+        )
+        sleeper = _FakeSleeper()
+
+        sonar = SonarRunner(
+            config=SonarConfig(host_url="http://x", token="", project_key="p"),
+            http_client=http,
+            clock=_FakeClock([0.0, 0.0, 0.0]),
+            sleeper=sleeper,
+        )
+        assert sonar.wait_for_analysis(timeout=30) is True
+        # PENDING → sleep(5) → SUCCESS. 정확히 한 번 sleep.
+        assert sleeper.calls == [5]
+
+    def test_wait_uses_injected_clock_not_real_time(self, monkeypatch):
+        """주입된 ``clock`` 이 사용되며, 실제 ``time.time`` 은 호출되지 않는다."""
+
+        def _boom():
+            raise AssertionError("실제 time.time 이 호출되면 안 됩니다")
+
+        monkeypatch.setattr("analyzer.sonar_runner.time.time", _boom)
+
+        http = _RecordingHttpClient()
+        http.queue(
+            _FakeResponse(status_code=200, json_data={"tasks": [{"status": "SUCCESS"}]})
+        )
+
+        sonar = SonarRunner(
+            config=SonarConfig(host_url="http://x", token="", project_key="p"),
+            http_client=http,
+            clock=_FakeClock([10.0, 10.0]),
+            sleeper=_FakeSleeper(),
+        )
+        assert sonar.wait_for_analysis(timeout=5) is True
+
+    def test_wait_success_first_attempt_no_sleep(self):
+        http = _RecordingHttpClient()
+        http.queue(
+            _FakeResponse(status_code=200, json_data={"tasks": [{"status": "SUCCESS"}]})
+        )
+        sleeper = _FakeSleeper()
+        sonar = SonarRunner(
+            config=SonarConfig(host_url="http://x", token="", project_key="p"),
+            http_client=http,
+            clock=_FakeClock([0.0, 0.0]),
+            sleeper=sleeper,
+        )
+        assert sonar.wait_for_analysis(timeout=120) is True
+        assert sleeper.calls == []
+        assert len(http.calls) == 1
+
+    def test_wait_success_second_attempt_one_sleep(self):
+        http = _RecordingHttpClient()
+        http.queue(
+            _FakeResponse(status_code=200, json_data={"tasks": [{"status": "PENDING"}]})
+        )
+        http.queue(
+            _FakeResponse(status_code=200, json_data={"tasks": [{"status": "SUCCESS"}]})
+        )
+        sleeper = _FakeSleeper()
+        sonar = SonarRunner(
+            config=SonarConfig(host_url="http://x", token="", project_key="p"),
+            http_client=http,
+            clock=_FakeClock([0.0, 0.0, 0.0]),
+            sleeper=sleeper,
+        )
+        assert sonar.wait_for_analysis(timeout=120) is True
+        assert sleeper.calls == [5]
+        assert len(http.calls) == 2
+
+    def test_wait_timeout_path_no_real_sleep(self, monkeypatch):
+        """타임아웃 경로에서도 실제 sleep 은 호출되지 않아야 한다."""
+
+        def _boom(*a, **kw):
+            raise AssertionError("실제 time.sleep 이 호출되면 안 됩니다")
+
+        monkeypatch.setattr("analyzer.sonar_runner.time.sleep", _boom)
+
+        http = _RecordingHttpClient()
+        http.queue(
+            _FakeResponse(status_code=200, json_data={"tasks": [{"status": "PENDING"}]})
+        )
+        sleeper = _FakeSleeper()
+        # start=0.0, 두 번째 호출에서 1000.0 으로 점프하여 timeout 직후 종료.
+        clock = _FakeClock([0.0, 1000.0])
+
+        sonar = SonarRunner(
+            config=SonarConfig(host_url="http://x", token="", project_key="p"),
+            http_client=http,
+            clock=clock,
+            sleeper=sleeper,
+        )
+        assert sonar.wait_for_analysis(timeout=5) is False
 
 
 __all__: list[str] = []
