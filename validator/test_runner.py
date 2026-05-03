@@ -22,6 +22,7 @@ from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.schemas import PatchSuggestion, PatchStatus
+from validator.validator_command_runner import ValidatorCommandRunner
 
 
 @dataclass
@@ -35,12 +36,22 @@ class TestResult:
 
 
 class TestRunner:
-    """LLM 생성 코드에 대한 테스트 실행기"""
+    """LLM 생성 코드에 대한 테스트 실행기.
 
-    def __init__(self, project_root: Optional[str] = None):
+    외부 도구(``pytest``) 호출은 ``ValidatorCommandRunner`` 어댑터에
+    위임한다. 테스트는 생성자에 더블을 주입해 실제 subprocess 호출을 막을
+    수 있다 (Wave 4-A).
+    """
+
+    def __init__(
+        self,
+        project_root: Optional[str] = None,
+        runner: Optional[ValidatorCommandRunner] = None,
+    ):
         self.project_root = project_root or os.path.dirname(
             os.path.dirname(os.path.abspath(__file__))
         )
+        self._runner = runner or ValidatorCommandRunner()
 
     def run(
         self,
@@ -123,12 +134,10 @@ class TestRunner:
                 # 테스트 파일이 없으면 테스트 미실행으로 표시 (VERIFIED로 올리지 않음)
                 return TestResult(passed=None, output="테스트 파일 없음 - 문법 검사만 완료")
 
-            result = subprocess.run(
+            result = self._runner.run(
                 [sys.executable, "-m", "pytest", test_path, "-v", "--tb=short"],
-                capture_output=True,
-                text=True,
-                timeout=60,
                 cwd=tmp_dir,
+                timeout=60,
             )
 
             return TestResult(

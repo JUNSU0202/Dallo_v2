@@ -15,13 +15,13 @@ import ast
 import sys
 import os
 import tempfile
-import subprocess
 from dataclasses import dataclass
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.schemas import PatchSuggestion, PatchStatus
+from validator.validator_command_runner import ValidatorCommandRunner
 
 
 @dataclass
@@ -33,7 +33,15 @@ class CheckResult:
 
 
 class SyntaxChecker:
-    """LLM 생성 코드의 문법 검증기"""
+    """LLM 생성 코드의 문법 검증기.
+
+    외부 도구(``flake8``) 호출은 ``ValidatorCommandRunner`` 어댑터에
+    위임한다. 테스트는 생성자에 더블을 주입해 실제 subprocess 호출을 막을
+    수 있다 (Wave 4-A).
+    """
+
+    def __init__(self, runner: Optional[ValidatorCommandRunner] = None):
+        self._runner = runner or ValidatorCommandRunner()
 
     def check(self, patch: PatchSuggestion, language: str = "python") -> PatchSuggestion:
         """
@@ -137,10 +145,8 @@ class SyntaxChecker:
             tmp_path = f.name
 
         try:
-            result = subprocess.run(
+            result = self._runner.run(
                 ["flake8", "--select=E9,F63,F7,F82", tmp_path],
-                capture_output=True,
-                text=True,
                 timeout=10,
             )
             if result.returncode == 0:
