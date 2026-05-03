@@ -12,7 +12,7 @@ Docker 환경에서 SonarQube가 실행 중이어야 합니다.
 
 import os
 import time
-from typing import Optional
+from typing import Callable, Optional
 from dataclasses import dataclass
 
 from analyzer.bandit_runner import Vulnerability, AnalysisResult
@@ -37,9 +37,12 @@ class SonarRunner:
 
     ``sonar-scanner`` subprocess 호출은 ``StaticToolCommandRunner`` 어댑터에
     위임한다(Wave 3-H). REST API HTTP 호출은 ``SonarHttpClient`` 어댑터에
-    위임한다(Wave 3-I). 테스트는 생성자에 더블을 주입해 실제 subprocess 호출
-    이나 네트워크 I/O 를 막을 수 있다. 본 모듈은 argv 구성, URL 구성, 응답
-    파싱, 한국어 에러 메시지 분기에만 집중한다.
+    위임한다(Wave 3-I). ``wait_for_analysis()`` 의 polling clock/sleeper 도
+    생성자 주입형 seam 으로 분리되어 있다(Wave 3-J). 테스트는 생성자에 더블
+    (``scanner_runner`` / ``http_client`` / ``clock`` / ``sleeper``)을 주입해
+    실제 subprocess 호출이나 네트워크 I/O, 실제 sleep 을 막을 수 있다. 본
+    모듈은 argv 구성, URL 구성, 응답 파싱, 한국어 에러 메시지 분기에만
+    집중한다.
     """
 
     def __init__(
@@ -47,6 +50,8 @@ class SonarRunner:
         config: Optional[SonarConfig] = None,
         scanner_runner: Optional[StaticToolCommandRunner] = None,
         http_client: Optional[SonarHttpClient] = None,
+        clock: Optional[Callable[[], float]] = None,
+        sleeper: Optional[Callable[[float], None]] = None,
     ):
         self.config = config or SonarConfig(
             token=os.environ.get("SONAR_TOKEN", ""),
@@ -55,6 +60,8 @@ class SonarRunner:
         self.auth = (self.config.token, "")
         self._scanner_runner = scanner_runner or StaticToolCommandRunner()
         self._http_client = http_client or SonarHttpClient()
+        self._clock = clock or time.time
+        self._sleeper = sleeper or time.sleep
 
     def is_available(self) -> bool:
         """SonarQube 서버가 실행 중인지 확인"""
@@ -169,8 +176,8 @@ class SonarRunner:
 
     def wait_for_analysis(self, timeout: int = 120) -> bool:
         """분석 완료를 대기합니다."""
-        start = time.time()
-        while time.time() - start < timeout:
+        start = self._clock()
+        while self._clock() - start < timeout:
             try:
                 resp = self._http_client.get(
                     f"{self.base_url}/api/ce/activity",
@@ -187,5 +194,5 @@ class SonarRunner:
                     return True
             except HttpRequestError:
                 pass
-            time.sleep(5)
+            self._sleeper(5)
         return False
