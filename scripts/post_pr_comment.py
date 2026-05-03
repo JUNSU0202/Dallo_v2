@@ -14,7 +14,10 @@ GitHub Actions에서 실행되는 PR 코멘트 게시 스크립트
 import os
 import sys
 import json
-import requests
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from integrations.github_pr_comment_adapter import post_or_update_pr_comment
 
 
 def load_json(path: str) -> dict:
@@ -217,31 +220,19 @@ def _bandit_details(results):
 
 
 def post_comment(token: str, repo: str, pr_number: int, body: str) -> bool:
-    """GitHub API로 PR 코멘트 게시 (기존 Dallo 코멘트는 업데이트)"""
-    url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github.v3+json",
-    }
+    """GitHub API로 PR 코멘트 게시 (기존 Dallo 코멘트는 업데이트).
 
-    # 기존 Dallo 코멘트 찾아서 업데이트
-    existing = requests.get(url, headers=headers)
-    if existing.status_code == 200:
-        for comment in existing.json():
-            if "🔍 Dallo 보안 분석 결과" in comment.get("body", ""):
-                resp = requests.patch(comment["url"], headers=headers, json={"body": body})
-                if resp.status_code == 200:
-                    print(f"[+] 기존 PR 코멘트 업데이트 완료 (ID: {comment['id']})")
-                    return True
-
-    # 새 코멘트 생성
-    resp = requests.post(url, headers=headers, json={"body": body})
-    if resp.status_code == 201:
-        print("[+] PR 코멘트 생성 완료")
-        return True
-    else:
-        print(f"[!] PR 코멘트 생성 실패: {resp.status_code} {resp.text}")
-        return False
+    HTTP 호출 책임은 ``integrations.github_pr_comment_adapter`` 어댑터가
+    담당한다. 본 함수는 어댑터 결과를 한국어 stdout / bool 로 변환한다.
+    """
+    result = post_or_update_pr_comment(
+        token=token,
+        repo=repo,
+        pr_number=pr_number,
+        body=body,
+    )
+    print(result["message"])
+    return result["status"] != "failed"
 
 
 def main():
