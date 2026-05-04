@@ -79,18 +79,31 @@ class SonarRunner:
         sonar-scanner를 실행하여 코드를 분석합니다.
 
         사전 조건: sonar-scanner가 PATH에 있거나 Docker로 실행
+
+        Wave 4-D: Sonar 토큰은 더 이상 argv (``-Dsonar.token=...``) 로
+        넘기지 않고, 비어있지 않은 경우에만 ``SONAR_TOKEN`` 환경변수로
+        child process 에 주입한다. argv 노출(프로세스 목록/로그)을 막기
+        위함이며, 토큰이 비어있으면 ``SONAR_TOKEN`` 키를 부모 환경에서
+        명시적으로 제거한 사본을 child 에 전달해, 부모 프로세스에 우연히
+        남아 있던 ambient ``SONAR_TOKEN`` 이 child scanner 로 상속되지
+        않도록 한다(env=None 으로 두면 부모 환경 전체가 상속된다).
         """
         cmd = [
             "sonar-scanner",
             f"-Dsonar.projectKey={self.config.project_key}",
             f"-Dsonar.host.url={self.base_url}",
-            f"-Dsonar.token={self.config.token}",
             f"-Dsonar.projectBaseDir={project_path}",
         ]
 
+        scanner_env: dict = os.environ.copy()
+        if self.config.token:
+            scanner_env["SONAR_TOKEN"] = self.config.token
+        else:
+            scanner_env.pop("SONAR_TOKEN", None)
+
         # sonar-project.properties 파일이 있으면 자동으로 읽음
         try:
-            proc = self._scanner_runner.run(cmd, timeout=300)
+            proc = self._scanner_runner.run(cmd, timeout=300, env=scanner_env)
             return proc.returncode == 0
         except FileNotFoundError:
             print("[!] sonar-scanner가 설치되어 있지 않습니다.")

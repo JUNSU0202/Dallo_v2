@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
-from typing import Optional
+from typing import Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,9 @@ class StaticToolCommandRunner:
 
     - ``shell=True`` 를 절대 사용하지 않는다.
     - 문자열 명령을 받지 않는다 (argv 는 반드시 list).
+    - ``env`` 가 주어지면 child process 의 환경변수로 그대로 전달한다
+      (None 이면 부모 프로세스 환경 상속). Wave 4-D 에서 Sonar 토큰을 argv
+      대신 ``SONAR_TOKEN`` 환경변수로 넘기기 위한 seam.
     """
 
     def run(
@@ -45,6 +48,7 @@ class StaticToolCommandRunner:
         *,
         cwd: Optional[str] = None,
         timeout: int = 120,
+        env: Optional[Mapping[str, str]] = None,
     ) -> CommandResult:
         if not isinstance(argv, list) or not argv:
             raise ValueError("argv 는 비어있지 않은 list[str] 여야 합니다")
@@ -55,6 +59,7 @@ class StaticToolCommandRunner:
             text=True,
             cwd=cwd,
             timeout=timeout,
+            env=env,
         )
         return CommandResult(
             stdout=proc.stdout or "",
