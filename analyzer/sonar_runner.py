@@ -16,6 +16,7 @@ from typing import Callable, Optional
 from dataclasses import dataclass
 
 from analyzer.bandit_runner import Vulnerability, AnalysisResult
+from analyzer.command_env import build_child_env
 from analyzer.sonar_http_client import (
     HttpConnectionError,
     HttpRequestError,
@@ -87,6 +88,13 @@ class SonarRunner:
         명시적으로 제거한 사본을 child 에 전달해, 부모 프로세스에 우연히
         남아 있던 ambient ``SONAR_TOKEN`` 이 child scanner 로 상속되지
         않도록 한다(env=None 으로 두면 부모 환경 전체가 상속된다).
+
+        Wave 4-E: child env 구성을 ``analyzer.command_env.build_child_env``
+        헬퍼에 위임한다. 부모 env 를 통째로 복사하지 않고 보수적인 allowlist
+        + 시크릿 이름 deny filter 를 거쳐, scanner 에 필요한 변수만 통과한다.
+        ``SONAR_TOKEN`` 은 ``self.config.token`` 이 비어있지 않을 때만 명시적인
+        ``extras`` 로 주입되며, 부모 환경의 ambient 시크릿(``ANTHROPIC_API_KEY``,
+        ``GITHUB_TOKEN``, ``AWS_SECRET_ACCESS_KEY`` 등) 은 child 로 상속되지 않는다.
         """
         cmd = [
             "sonar-scanner",
@@ -95,11 +103,10 @@ class SonarRunner:
             f"-Dsonar.projectBaseDir={project_path}",
         ]
 
-        scanner_env: dict = os.environ.copy()
+        extras: dict[str, str] = {}
         if self.config.token:
-            scanner_env["SONAR_TOKEN"] = self.config.token
-        else:
-            scanner_env.pop("SONAR_TOKEN", None)
+            extras["SONAR_TOKEN"] = self.config.token
+        scanner_env = build_child_env(extras=extras)
 
         # sonar-project.properties 파일이 있으면 자동으로 읽음
         try:
