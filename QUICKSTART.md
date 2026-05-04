@@ -132,7 +132,7 @@ python scripts/run_analysis.py \
 | SonarQube 분석 실행 | `analyzer/sonar_runner.py` | ✅ 완료 (Docker 필요) |
 | 코드 문맥 추출 | `analyzer/context_extractor.py` | ✅ 완료 |
 | 결과 파서/정규화 | `analyzer/result_parser.py` | ✅ 완료 |
-| GitHub API 클라이언트 | `integrations/github_client.py` | ✅ 완료 |
+| GitHub API 클라이언트 | `integrations/github_client.py` | 🟡 보류/미사용: Wave 4-C 기준 active caller 없음, 향후 사용 전 adapter seam/test 필요 |
 | PR 코멘트 포맷터 | `integrations/pr_commenter.py` | ✅ 완료 |
 | GitHub Actions 워크플로우 | `.github/workflows/security-analysis.yml` | ✅ 완료 |
 | PR 코멘트 게시 스크립트 | `scripts/post_pr_comment.py` | ✅ 완료 |
