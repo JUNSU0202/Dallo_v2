@@ -1,8 +1,26 @@
 """
-GitHub API 연동 클라이언트
+GitHub API 연동 클라이언트 (Wave 4-C 기준 보류/미사용 모듈)
 
-Pull Request 정보 조회, 변경 파일 목록 확인,
-코멘트 작성 등 GitHub 관련 작업을 처리합니다.
+[상태]
+- Wave 4-C 시점, 본 저장소 및 워크플로우에는 이 모듈을 호출하는
+  active caller가 존재하지 않습니다 (audit 완료).
+- 운영 중인 PR 코멘트 경로는 다음과 같으며, 본 모듈을 사용하지 않습니다:
+    scripts/post_pr_comment.py
+      → integrations/github_pr_comment_adapter.py
+
+[보존 사유]
+- 향후 GitHub 통합 확장 시 사용할 수 있는 surface(예: PR 메타데이터/변경
+  파일 조회, 라인 단위 review comment, Check Run API, GitHub Actions
+  이벤트 파서)를 deferred/legacy 형태로 보관합니다.
+
+[활성화 전 필요 작업]
+- fakeable HTTP client seam 도입 (Wave 4-B 어댑터 패턴 참고)
+- 모든 외부 호출에 대한 timeout 명시
+- 단위 테스트 추가 (성공/실패/네트워크 오류 경로 포함)
+- 토큰 비누출 확인 (로그/예외 메시지에 token 노출 금지)
+
+활성화 전에는 read-only audit/refactor 대상이며, 신규 코드에서 직접
+import 하지 마십시오.
 """
 
 import os

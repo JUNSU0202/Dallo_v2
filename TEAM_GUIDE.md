@@ -304,7 +304,7 @@ dallo-devsecops/
 │   └── HistoryView.jsx         ✅ 분석 이력 + 추이 차트
 │
 ├── integrations/               ← 이준수
-│   ├── github_client.py        ✅ GitHub API 클라이언트
+│   ├── github_client.py        🟡 보류/미사용: Wave 4-C 기준 active caller 없음, 향후 사용 전 adapter seam/test 필요
 │   └── pr_commenter.py         ✅ PR 코멘트 작성
 ├── scripts/                    ← 이준수
 │   ├── run_analysis.py         ✅ CLI 분석 실행
