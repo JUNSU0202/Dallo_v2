@@ -190,8 +190,16 @@ class _RecordingRunner:
         *,
         cwd: Optional[str] = None,
         timeout: int = 120,
+        env: Optional[dict] = None,
     ) -> CommandResult:
-        self.calls.append({"argv": list(argv), "cwd": cwd, "timeout": timeout})
+        self.calls.append(
+            {
+                "argv": list(argv),
+                "cwd": cwd,
+                "timeout": timeout,
+                "env": dict(env) if env is not None else None,
+            }
+        )
         if self.responses:
             item = self.responses.pop(0)
             if isinstance(item, BaseException):
@@ -348,8 +356,12 @@ class TestRunScanArgvShape:
         argv = runner.calls[0]["argv"]
         assert "-Dsonar.projectBaseDir=." in argv
 
-    def test_run_scan_argv_token_arg_uses_injected_token(self):
-        """argv 에 token 이 포함되긴 하나 테스트 값은 토큰스럽지 않은 placeholder 다."""
+    def test_run_scan_argv_never_contains_sonar_token(self):
+        """Wave 4-D: 토큰이 있어도 argv 에 ``-Dsonar.token=`` 인자는 절대 들어가지 않는다.
+
+        argv 는 프로세스 목록(`ps`, `/proc/<pid>/cmdline`)이나 부모 셸 로그에
+        그대로 노출되기 쉬우므로, scanner 에는 토큰을 환경변수로만 전달한다.
+        """
         runner = _RecordingRunner()
         runner.queue(returncode=0)
         sonar = SonarRunner(
@@ -360,10 +372,53 @@ class TestRunScanArgvShape:
         sonar.run_scan("/tmp/repo")
 
         argv = runner.calls[0]["argv"]
-        # 정확한 값 내용은 검증하지 않음(스캐너가 어떻게 처리하는지는 본 테스트 범위 밖).
-        # 다만 -Dsonar.token= 로 시작하는 인자가 1개 존재해야 한다.
         token_args = [a for a in argv if a.startswith("-Dsonar.token=")]
-        assert len(token_args) == 1
+        assert token_args == [], (
+            "Wave 4-D: Sonar 토큰은 argv 가 아니라 SONAR_TOKEN env 로만 전달되어야 함"
+        )
+
+    def test_run_scan_passes_token_via_env_when_token_present(self):
+        """Wave 4-D: 토큰이 비어있지 않으면 ``SONAR_TOKEN`` 환경변수로 주입된다."""
+        runner = _RecordingRunner()
+        runner.queue(returncode=0)
+        sonar = SonarRunner(
+            config=SonarConfig(token="x"),
+            scanner_runner=runner,
+            http_client=_RecordingHttpClient(),
+        )
+        sonar.run_scan("/tmp/repo")
+
+        env = runner.calls[0]["env"]
+        assert env is not None, "토큰이 있을 때는 env 가 주입되어야 함 (None 금지)"
+        assert env.get("SONAR_TOKEN") == "x"
+
+    def test_run_scan_omits_token_argv_and_env_when_token_empty(self, monkeypatch):
+        """Wave 4-D: 토큰이 비어있으면 argv 토큰 인자도, env 도 추가하지 않는다.
+
+        부모 환경에 우연히 ``SONAR_TOKEN`` 이 흘러들어와 있더라도, runner 가
+        env=None 을 보내면 child 는 부모 환경을 그대로 상속하므로 본 테스트는
+        runner 호출 표면(env=None) 만 검증한다.
+        """
+        # 부모 env 노이즈는 env=None 위임 보장 검사에 영향이 없어야 한다.
+        monkeypatch.setenv("SONAR_TOKEN", "leaked-from-parent")
+
+        runner = _RecordingRunner()
+        runner.queue(returncode=0)
+        sonar = SonarRunner(
+            config=SonarConfig(token=""),
+            scanner_runner=runner,
+            http_client=_RecordingHttpClient(),
+        )
+        sonar.run_scan("/tmp/repo")
+
+        argv = runner.calls[0]["argv"]
+        assert [a for a in argv if a.startswith("-Dsonar.token=")] == []
+        env = runner.calls[0]["env"]
+        # env 자체가 None 이거나, 비어있으면 SONAR_TOKEN 키가 명시적으로 없어야 한다.
+        if env is not None:
+            assert "SONAR_TOKEN" not in env, (
+                "토큰이 빈 값일 때는 SONAR_TOKEN 을 명시적으로 주입하지 않아야 함"
+            )
 
 
 # ============================================================
