@@ -83,8 +83,10 @@ class SonarRunner:
         Wave 4-D: Sonar 토큰은 더 이상 argv (``-Dsonar.token=...``) 로
         넘기지 않고, 비어있지 않은 경우에만 ``SONAR_TOKEN`` 환경변수로
         child process 에 주입한다. argv 노출(프로세스 목록/로그)을 막기
-        위함이며, 토큰이 비어있으면 환경 변수도 주입하지 않아 빈 값이
-        실수로 인증 경로에 쓰이지 않게 한다.
+        위함이며, 토큰이 비어있으면 ``SONAR_TOKEN`` 키를 부모 환경에서
+        명시적으로 제거한 사본을 child 에 전달해, 부모 프로세스에 우연히
+        남아 있던 ambient ``SONAR_TOKEN`` 이 child scanner 로 상속되지
+        않도록 한다(env=None 으로 두면 부모 환경 전체가 상속된다).
         """
         cmd = [
             "sonar-scanner",
@@ -93,10 +95,11 @@ class SonarRunner:
             f"-Dsonar.projectBaseDir={project_path}",
         ]
 
-        scanner_env: Optional[dict] = None
+        scanner_env: dict = os.environ.copy()
         if self.config.token:
-            scanner_env = os.environ.copy()
             scanner_env["SONAR_TOKEN"] = self.config.token
+        else:
+            scanner_env.pop("SONAR_TOKEN", None)
 
         # sonar-project.properties 파일이 있으면 자동으로 읽음
         try:

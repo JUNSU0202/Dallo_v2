@@ -395,12 +395,15 @@ class TestRunScanArgvShape:
     def test_run_scan_omits_token_argv_and_env_when_token_empty(self, monkeypatch):
         """Wave 4-D: 토큰이 비어있으면 argv 토큰 인자도, env 도 추가하지 않는다.
 
-        부모 환경에 우연히 ``SONAR_TOKEN`` 이 흘러들어와 있더라도, runner 가
-        env=None 을 보내면 child 는 부모 환경을 그대로 상속하므로 본 테스트는
-        runner 호출 표면(env=None) 만 검증한다.
+        부모 환경에 우연히 ``SONAR_TOKEN`` 이 남아 있어도, ``SonarConfig(token="")``
+        으로 명시적 빈 토큰을 지정한 경우 runner 에는 부모 env 사본에서
+        ``SONAR_TOKEN`` 키를 명시적으로 제거한 dict 를 전달해야 한다. env=None
+        은 부모 환경 전체 상속을 의미하므로 ambient 토큰이 child scanner 로
+        흘러들어갈 수 있어 더 이상 허용하지 않는다.
         """
-        # 부모 env 노이즈는 env=None 위임 보장 검사에 영향이 없어야 한다.
-        monkeypatch.setenv("SONAR_TOKEN", "leaked-from-parent")
+        # 부모 env 에 ambient SONAR_TOKEN 노이즈를 심어 두고, runner 호출 시
+        # 명시적으로 제거되었는지 검증한다 (짧고 secret-scan 안전한 placeholder).
+        monkeypatch.setenv("SONAR_TOKEN", "x-parent")
 
         runner = _RecordingRunner()
         runner.queue(returncode=0)
@@ -414,11 +417,14 @@ class TestRunScanArgvShape:
         argv = runner.calls[0]["argv"]
         assert [a for a in argv if a.startswith("-Dsonar.token=")] == []
         env = runner.calls[0]["env"]
-        # env 자체가 None 이거나, 비어있으면 SONAR_TOKEN 키가 명시적으로 없어야 한다.
-        if env is not None:
-            assert "SONAR_TOKEN" not in env, (
-                "토큰이 빈 값일 때는 SONAR_TOKEN 을 명시적으로 주입하지 않아야 함"
-            )
+        assert env is not None, (
+            "Wave 4-D: 빈 토큰일 때도 env=None 금지 — 부모 SONAR_TOKEN 상속을"
+            " 차단하기 위해 명시적 dict 사본을 넘겨야 함"
+        )
+        assert "SONAR_TOKEN" not in env, (
+            "토큰이 빈 값일 때는 부모 환경의 ambient SONAR_TOKEN 도 child 에"
+            " 상속되지 않도록 명시적으로 제거되어야 함"
+        )
 
 
 # ============================================================
