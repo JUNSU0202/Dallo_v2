@@ -426,6 +426,67 @@ class TestRunScanArgvShape:
             " 상속되지 않도록 명시적으로 제거되어야 함"
         )
 
+    def test_run_scan_strips_ambient_secrets_from_child_env(self, monkeypatch):
+        """Wave 4-E: 부모 env 의 ambient 시크릿 (``ANTHROPIC_API_KEY`` /
+        ``GITHUB_TOKEN`` / ``AWS_SECRET_ACCESS_KEY`` 등) 은 sanitizer 에 의해
+        scanner 의 child env 로 상속되지 않는다.
+        """
+        # 시크릿 placeholder — secret-scan 에 걸리지 않는 짧은 더미.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setenv("GITHUB_TOKEN", "x")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "x")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "x")
+        monkeypatch.setenv("NPM_TOKEN", "x")
+        monkeypatch.setenv("DATABASE_URL", "x")
+
+        runner = _RecordingRunner()
+        runner.queue(returncode=0)
+        sonar = SonarRunner(
+            config=SonarConfig(token="y"),
+            scanner_runner=runner,
+            http_client=_RecordingHttpClient(),
+        )
+        sonar.run_scan("/tmp/repo")
+
+        env = runner.calls[0]["env"]
+        for secret_name in (
+            "ANTHROPIC_API_KEY",
+            "GITHUB_TOKEN",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_ACCESS_KEY_ID",
+            "NPM_TOKEN",
+            "DATABASE_URL",
+        ):
+            assert secret_name not in env, (
+                f"Wave 4-E: ambient {secret_name} 은 sanitizer 가 child env 에서 제거해야 함"
+            )
+        # 토큰이 명시 grant 되었으므로 SONAR_TOKEN 은 그대로 통과
+        assert env.get("SONAR_TOKEN") == "y"
+
+    def test_run_scan_preserves_path_and_home_from_parent_env(self, monkeypatch):
+        """Wave 4-E: scanner 동작에 필요한 PATH/HOME/JAVA_HOME 같은 변수는 부모
+        env 에서 정상적으로 상속되어야 한다.
+        """
+        monkeypatch.setenv("PATH", "/tmp/fake-bin:/usr/bin")
+        monkeypatch.setenv("HOME", "/tmp/home")
+        monkeypatch.setenv("JAVA_HOME", "/usr/lib/jvm/default")
+        monkeypatch.setenv("LANG", "en_US.UTF-8")
+
+        runner = _RecordingRunner()
+        runner.queue(returncode=0)
+        sonar = SonarRunner(
+            config=SonarConfig(token="x"),
+            scanner_runner=runner,
+            http_client=_RecordingHttpClient(),
+        )
+        sonar.run_scan("/tmp/repo")
+
+        env = runner.calls[0]["env"]
+        assert env["PATH"] == "/tmp/fake-bin:/usr/bin"
+        assert env["HOME"] == "/tmp/home"
+        assert env["JAVA_HOME"] == "/usr/lib/jvm/default"
+        assert env["LANG"] == "en_US.UTF-8"
+
 
 # ============================================================
 # run_scan: returncode / 예외 분기
