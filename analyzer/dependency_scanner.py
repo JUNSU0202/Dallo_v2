@@ -26,9 +26,49 @@ import logging
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
+from analyzer.command_env import build_child_env
 from analyzer.dependency_command_runner import DependencyCommandRunner
 
 logger = logging.getLogger(__name__)
+
+
+# Wave 4-H: pip-audit 전용 child env allowlist.
+# build_child_env 의 기본 allowlist (PATH/HOME/LANG/proxy 등) 외에, pip 가
+# 정상 동작하기 위해 필요한 비-시크릿 운영 변수만 추가한다. 사설 PyPI
+# 레지스트리/자격증명 관련 변수 (PIP_INDEX_URL / PIP_EXTRA_INDEX_URL /
+# PIP_TRUSTED_HOST / PIP_CONFIG_FILE 등) 는 의도적으로 ambient 상속을
+# 허용하지 않는다 — 향후 사설 레지스트리 기능이 필요해지면 별도 wave 에서
+# 명시적 capability extras 패턴으로 도입.
+_PIP_AUDIT_ENV_ALLOWLIST: tuple[str, ...] = (
+    "PIP_CACHE_DIR",
+    "PIP_DISABLE_PIP_VERSION_CHECK",
+    "PIP_NO_INPUT",
+    "PIP_CERT",
+    "PIP_CLIENT_CERT",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "XDG_CACHE_HOME",
+)
+
+
+# Wave 4-H: npm 전용 child env allowlist.
+# 사설 npm 레지스트리/자격증명 관련 변수 (NPM_CONFIG_REGISTRY /
+# NPM_CONFIG_USERCONFIG / NPM_CONFIG_HTTPS_PROXY / NPM_CONFIG_PROXY /
+# 소문자 ``npm_config_*`` / npm ``_authToken`` 등) 는 의도적으로 ambient
+# 상속을 허용하지 않는다.
+_NPM_ENV_ALLOWLIST: tuple[str, ...] = (
+    "NPM_CONFIG_CACHE",
+    "NPM_CONFIG_AUDIT_LEVEL",
+    "NPM_CONFIG_STRICT_SSL",
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "XDG_CACHE_HOME",
+)
 
 
 @dataclass
@@ -153,10 +193,17 @@ class DependencyScanner:
             with open(pkg_path, "w", encoding="utf-8") as f:
                 f.write(package_json_text)
             # npm install 실행 (외부 명령 호출은 어댑터 경유)
+            # Wave 4-H: 부모 env 전체를 자식에게 상속시키지 않고
+            # ``build_child_env`` 의 보수적 allowlist + 시크릿 이름 deny
+            # filter 를 거친 sanitized env 만 전달한다. ``NPM_TOKEN`` /
+            # ``NPM_CONFIG_REGISTRY`` / ``NPM_CONFIG_USERCONFIG`` 등 사설
+            # 레지스트리/자격증명 변수가 npm 자식 프로세스로 누출되는 위험
+            # 을 차단.
             self._runner.run(
                 ["npm", "install", "--package-lock-only"],
                 cwd=tmp_dir,
                 timeout=60,
+                env=build_child_env(allowlist=_NPM_ENV_ALLOWLIST),
             )
             return self._scan_npm(tmp_dir)
         finally:
@@ -179,7 +226,17 @@ class DependencyScanner:
                 "--output", "-",
             ]
 
-            proc = self._runner.run(cmd, timeout=120)
+            # Wave 4-H: 부모 env 전체를 자식에게 상속시키지 않고
+            # ``build_child_env`` 의 보수적 allowlist + 시크릿 이름 deny
+            # filter 를 거친 sanitized env 만 전달한다. ``PYPI_TOKEN`` /
+            # ``PIP_INDEX_URL`` / ``PIP_EXTRA_INDEX_URL`` / ``PIP_CONFIG_FILE``
+            # 등 사설 레지스트리/자격증명 변수가 pip-audit 자식 프로세스로
+            # 누출되는 위험을 차단.
+            proc = self._runner.run(
+                cmd,
+                timeout=120,
+                env=build_child_env(allowlist=_PIP_AUDIT_ENV_ALLOWLIST),
+            )
 
             output = proc.stdout
             if not output:
@@ -280,7 +337,15 @@ class DependencyScanner:
 
         try:
             cmd = ["npm", "audit", "--json"]
-            proc = self._runner.run(cmd, cwd=project_path, timeout=120)
+            # Wave 4-H: 부모 env 전체를 자식에게 상속시키지 않고
+            # ``build_child_env`` 의 보수적 allowlist + 시크릿 이름 deny
+            # filter 를 거친 sanitized env 만 전달한다.
+            proc = self._runner.run(
+                cmd,
+                cwd=project_path,
+                timeout=120,
+                env=build_child_env(allowlist=_NPM_ENV_ALLOWLIST),
+            )
 
             output = proc.stdout
             if not output:

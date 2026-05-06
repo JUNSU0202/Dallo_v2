@@ -176,6 +176,22 @@ class TestDenyFilterStripsSecrets:
 
         assert env == {"PATH": "/usr/bin"}
 
+    def test_auth_substring_strips_npm_authtoken_and_private_auth_vars(self):
+        """Wave 4-H: ``AUTH`` substring 으로 npm ``_authToken`` / 사설 ``*_AUTH``
+        같이 ``TOKEN``/``PASSWORD`` 토큰을 포함하지 않는 auth-like 이름도 차단."""
+        base = {
+            "PATH": "/usr/bin",
+            "NPM_AUTHTOKEN": "x",
+            "VENDOR_AUTH": "x",
+            "PRIVATE_REGISTRY_AUTH": "x",
+        }
+        # 호출자 allowlist 로 명시 통과를 시도해도 deny filter 로 막혀야 한다.
+        env = build_child_env(
+            base_env=base,
+            allowlist=["NPM_AUTHTOKEN", "VENDOR_AUTH", "PRIVATE_REGISTRY_AUTH"],
+        )
+        assert env == {"PATH": "/usr/bin"}
+
     def test_sonar_token_in_base_env_is_stripped(self):
         """``SONAR_TOKEN`` 은 base env 에 있어도 통과시키지 않는다 (extras 전용)."""
         base = {"PATH": "/usr/bin", "SONAR_TOKEN": "x-parent"}

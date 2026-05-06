@@ -100,6 +100,11 @@ _DEFAULT_DENY_SUBSTRINGS: tuple[str, ...] = (
     # 단독 "KEY" 는 광범위하지만 allowlist 가 1차 게이트라 false positive 위험이
     # 낮다 (allowlist 에 ``_KEY`` 를 포함하는 변수명은 없다).
     "KEY",
+    # Wave 4-H: npm ``_authToken`` / ``_auth`` / 사설 레지스트리 ``*_AUTH`` 등
+    # ``TOKEN``/``PASSWORD`` 토큰을 포함하지 않는 auth-like 이름을 한 번 더
+    # 거른다. 기본 allowlist 에는 ``AUTH`` 부분문자열을 포함한 키가 없어
+    # false positive 위험이 낮다.
+    "AUTH",
 )
 
 # 명시적으로 알려진 시크릿 변수명. substring 매칭에 걸리지 않을 수 있는
