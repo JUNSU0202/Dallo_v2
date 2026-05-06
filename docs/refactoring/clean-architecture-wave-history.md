@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-G 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-H 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -33,7 +33,7 @@ Dallo 의 리팩터링은 **세 단계의 큰 흐름** 으로 진행되었다.
 | --- | --- | --- | --- |
 | **Wave 2 (A~S, 19 wave)** | API/라우터/서비스/부트스트랩/경로 안정화 | 단일 파일에 뭉친 책임을 라우터·서비스 계층으로 분리, 부트스트랩 부수효과 정리, 경로 안전성 강화 | `api/server.py` 거대 파일을 라우터/서비스 단위로 분해 |
 | **Wave 3 (A~J, 11 wave)** | analyzer/외부 의존 경계 추출 | subprocess·HTTP·시간 의존성을 어댑터(seam)로 분리, fakeable 테스트 가능한 구조로 전환 | `pip-audit`, Bandit, Semgrep, Sonar scanner, Sonar HTTP, polling clock 까지 모두 외부 경계 격리 |
-| **Wave 4 (A~G, 7 wave)** | validator·통합·토큰·환경 변수 보안 강화 | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시 | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 |
+| **Wave 4 (A~H, 8 wave)** | validator·통합·토큰·환경 변수 보안 강화 | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 |
 
 핵심 원칙은 다음 네 가지다.
 
@@ -220,6 +220,7 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-E | `67a2b79` | 공통 child env sanitizer | `analyzer/command_env.py` | allowlist + deny filter + extras |
 | 4-F | `4d2f435` | Bandit child env sanitizer | `analyzer/bandit_runner.py` | Bandit 자식 env 살균 |
 | 4-G | `aa92374` | Semgrep child env sanitizer | `analyzer/semgrep_runner.py` | Semgrep caller-specific allowlist |
+| 4-H | (로컬 머지 보류) | Dependency scanner child env sanitizer | `analyzer/dependency_command_runner.py`, `analyzer/dependency_scanner.py`, `analyzer/command_env.py` | pip-audit/npm caller-specific allowlist + AUTH deny 강화 |
 
 ---
 
@@ -736,6 +737,33 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - 검증 근거: targeted 109 passed, broader 77 passed, full 635 passed, fake Semgrep env smoke PASS, security scan clean, independent review APPROVED (rationale 4-G + continuity 4-G).
 - Rollback: `git revert -m 1 aa92374`.
 
+### Wave 4-H — Dependency scanner child env sanitizer
+
+- 머지 커밋: 로컬 머지 보류 (구현 커밋만 존재 — 사용자 명시 승인 시점에 머지 예정)
+- 주요 파일/영역:
+  - `analyzer/dependency_command_runner.py`
+  - `analyzer/dependency_scanner.py`
+  - `analyzer/command_env.py`
+  - `tests/test_dependency_scanner_runner_adapter.py`
+  - `tests/test_command_env_sanitizer.py`
+- 이전 구조: Wave 3-F 가 `DependencyScanner` 의 pip-audit / npm install / npm audit subprocess 호출을 `DependencyCommandRunner` 어댑터로 분리했지만, 어댑터는 `env` 키워드를 받지 않았고 호출자도 sanitized env 를 넘기지 않았다. 결과적으로 자식 프로세스가 부모 env 전체를 그대로 상속받았다.
+- 문제/위험: AI/Vibe-Coding/CI 환경에서 부모 env 에는 `ANTHROPIC_API_KEY` / `GITHUB_TOKEN` / `NPM_TOKEN` / `PYPI_TOKEN` / `DATABASE_URL` 같은 비밀과, `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` / `PIP_CONFIG_FILE` / `NPM_CONFIG_REGISTRY` / `NPM_CONFIG_USERCONFIG` / `NPM_CONFIG_HTTPS_PROXY` / `NPM_CONFIG_PROXY` / 소문자 `npm_config_*` / npm `_authToken` 류 사설 레지스트리·자격증명 변수가 흔히 들어 있다. 이들이 pip-audit / npm 자식 프로세스의 로그·캐시·원격 호출로 누출될 수 있었다.
+- 결정 (정책): 사용자 read-only audit 후 **C. Hybrid / explicit capability** 안 채택. 운영에 필요한 안전 변수만 caller-specific allowlist 로 통과시키고, 사설 PyPI/npm 레지스트리 자격증명 변수는 ambient 상속을 허용하지 않는다. 사설 레지스트리 지원은 향후 별도 wave 의 명시적 capability grant 작업으로 분리한다.
+- 변경:
+  - `DependencyCommandRunner.run()` 에 선택 키워드 인자 `env: Optional[Mapping[str, str]] = None` 추가. `subprocess.run(..., env=env)` 로 그대로 전달. `env=None` (default) 면 기존 부모 env 상속 동작이 유지되어 미마이그레이션 caller 호환성을 보존.
+  - `analyzer/dependency_scanner.py` 에 `_PIP_AUDIT_ENV_ALLOWLIST` 와 `_NPM_ENV_ALLOWLIST` caller-specific 상수 도입. 두 allowlist 모두 비-시크릿 운영 변수만 포함 (PIP_CACHE_DIR, PIP_DISABLE_PIP_VERSION_CHECK, PIP_NO_INPUT, PIP_CERT, PIP_CLIENT_CERT, NPM_CONFIG_CACHE, NPM_CONFIG_AUDIT_LEVEL, NPM_CONFIG_STRICT_SSL, NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, SSL_CERT_DIR, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE, XDG_CACHE_HOME). `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL`/`PIP_TRUSTED_HOST`/`PIP_CONFIG_FILE`/`NPM_CONFIG_REGISTRY`/`NPM_CONFIG_USERCONFIG`/`NPM_CONFIG_HTTPS_PROXY`/`NPM_CONFIG_PROXY`/소문자 `npm_config_*`/npm `_authToken` 류는 의도적으로 미포함.
+  - `_scan_pip()` 가 `env=build_child_env(allowlist=_PIP_AUDIT_ENV_ALLOWLIST)` 로 호출. `scan_package_json_text()` 의 npm install 과 `_scan_npm()` 의 npm audit 모두 `env=build_child_env(allowlist=_NPM_ENV_ALLOWLIST)` 로 호출.
+  - `analyzer/command_env.py::_DEFAULT_DENY_SUBSTRINGS` 에 `"AUTH"` 추가. npm `_authToken` / `_auth` / 사설 `*_AUTH` 처럼 `TOKEN`/`PASSWORD` 토큰을 포함하지 않는 auth-like 이름까지 한 번 더 거른다. 기본 allowlist 에는 `AUTH` 부분문자열을 포함한 키가 없어 false positive 위험이 낮음.
+- 클린 아키텍처 적합성: Wave 4-E 의 공유 boundary helper(`build_child_env`)를 그대로 재사용하고, Wave 4-G 와 동일한 *caller-specific allowlist* 패턴을 적용. `DependencyCommandRunner` 는 외부 명령 어댑터라는 단일 책임을 유지하면서, Wave 4-D/E/F/G 와 동일한 env 키워드 seam 만 노출. 정책(어떤 변수를 통과시킬지)은 도메인 caller(`DependencyScanner`) 가 보유한다.
+- 보존된 동작: pip-audit / npm install / npm audit 의 argv shape, cwd, timeout(120/60/120), JSON 파싱, fallback 분기, `pip-audit이 설치되어 있지 않습니다`/`pip-audit 미설치`/`pip-audit 출력 파싱 실패`/`pip-audit 시간 초과 (120초)`/`npm이 설치되어 있지 않습니다`/`npm audit 시간 초과 (120초)` 한국어 에러 메시지, fake runner 주입 seam, 인자 없는 생성자 동작.
+- 검증 근거:
+  - Targeted: `tests/test_dependency_scanner_runner_adapter.py` `tests/test_command_env_sanitizer.py` `tests/test_api_dependency_scanning_service.py` → 65 passed.
+  - Broader: 위 + `tests/test_static_tool_command_runner_adapter.py` `tests/test_sonar_runner_adapter.py` → 142 passed.
+  - Full: `pytest tests/ -q` → 645 passed, 5 warnings (기존 SQLAlchemy `datetime.datetime.utcnow()` deprecation + asyncio no-current-event-loop 경고로 본 wave 와 무관).
+  - 실 외부 도구 호출 0건 (pip-audit / npm / 네트워크 모두 fake runner 로 격리, parent env 는 `monkeypatch.setattr(os, "environ", ...)` 로 격리).
+- 명시적 비적용: 사설 PyPI/npm 레지스트리 자격증명 변수의 ambient 상속은 의도적으로 허용하지 않음. 향후 사설 레지스트리 기능이 product requirement 가 되면 별도 wave 에서 `extras` capability grant 패턴으로 도입.
+- Rollback: 로컬 머지 시점에 `git revert -m 1 <merge-sha>` (구현 커밋만으로 되돌릴 경우 `git revert <impl-sha>`).
+
 ---
 
 ## 9. 보안 강화 관점 요약
@@ -746,7 +774,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 - **secret 누출 경로 감소**
   - argv exposure: Sonar 토큰이 `-Dsonar.token=...` 로 argv 에 들어가던 위험 제거(Wave 4-D).
-  - ambient env leakage: 부모 env 의 secret-like 변수가 자식 도구로 묵시 상속되던 위험 제거(Wave 4-E ~ 4-G).
+  - ambient env leakage: 부모 env 의 secret-like 변수가 자식 도구로 묵시 상속되던 위험 제거(Wave 4-E ~ 4-H). Wave 4-H 는 pip-audit/npm 의 사설 레지스트리·자격증명 변수까지 ambient 상속을 차단하고 `AUTH` substring 기반 deny 보강을 추가했다.
 - **외부 명령 보안 통제 일원화**
   - `subprocess.run` 호출이 어댑터(`StaticToolCommandRunner`, `DependencyCommandRunner`, `ValidatorCommandRunner`) 에 모임.
   - shell=True 금지, list-argv 강제, timeout 명시.
@@ -779,17 +807,17 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-## 10. 현재 상태 (Wave 4-G 시점)
+## 10. 현재 상태 (Wave 4-H 시점)
 
-- 로컬 main 의 최신 커밋: `aa92374 merge: integrate Wave 4-G Semgrep env sanitizer`
+- 로컬 main 의 최신 머지 커밋: `aa92374 merge: integrate Wave 4-G Semgrep env sanitizer` (Wave 4-G 시점).
+  - Wave 4-H 는 **구현 커밋만 작성**되었고, 사용자 명시 승인 시점에 로컬 main 으로 머지될 예정이다 (push 미수행 정책 유지).
 - 본 head 는 **로컬에만 존재**하며 원격으로 push 되지 않았다.
-- 마지막 검증된 전체 테스트 결과: `635 passed, 5 warnings`.
+- 마지막 검증된 전체 테스트 결과 (Wave 4-H 적용 후 worktree 기준): `645 passed, 5 warnings`.
   - 5 warnings 는 SQLAlchemy `datetime.datetime.utcnow()` 와 asyncio no-current-event-loop 관련 기존 deprecation warnings 로, 이번 리팩터링과 무관하다.
 - 보안 스캔(추가 라인 secret-like / dangerous patterns / 운영 영역) 모두 clean.
-- 다음 권장 작업: **Wave 4-H — Dependency scanner npm/pip child env sanitizer read-only audit**.
-  - 이유: `DependencyScanner` 는 `DependencyCommandRunner` 를 통해 pip/npm 도구를 실행한다. npm/pip 의 child env 는 사설 레지스트리 토큰, 프록시 설정, index URL, cache/config 경로, 인증서 번들 등에 민감하다.
-  - 점검 대상 변수 후보: `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`, `PIP_TRUSTED_HOST`, `PIP_CERT`, `PIP_CONFIG_FILE`, `PIP_CACHE_DIR`, `NPM_CONFIG_REGISTRY`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_CACHE`, `NPM_CONFIG_HTTPS_PROXY`, `NPM_CONFIG_PROXY`, `NODE_EXTRA_CA_CERTS`. npm `_authToken` 류는 ambient 상속 금지를 명시적으로 결정해야 한다.
-  - 수행 방식: 즉시 구현하지 않고 **read-only audit 부터** 시작한다.
+- 다음 권장 작업 후보:
+  - 사설 PyPI/npm 레지스트리 capability grant wave (필요해질 때): pip 의 `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL` 와 npm 의 `NPM_CONFIG_REGISTRY` + `_authToken` 을 명시적 `DependencyScanner` 생성자 인자 + `build_child_env(extras=...)` 패턴으로 도입.
+  - Validator child env sanitizer: `validator/validator_command_runner.py` 의 flake8/pytest 호출에도 동일한 caller-specific allowlist 패턴 적용 검토.
 
 ---
 
@@ -816,4 +844,4 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-*문서 버전: Wave 4-G 시점 (2026-05-06).*
+*문서 버전: Wave 4-H 시점 (2026-05-06).*

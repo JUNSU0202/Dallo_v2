@@ -205,8 +205,20 @@ class _RecordingRunner:
     def queue_exc(self, argv0: str, exc: BaseException):
         self.responses.setdefault(argv0, []).append(exc)
 
-    def run(self, argv: list[str], *, cwd: Optional[str] = None, timeout: int = 120) -> CommandResult:
-        self.calls.append({"argv": list(argv), "cwd": cwd, "timeout": timeout})
+    def run(
+        self,
+        argv: list[str],
+        *,
+        cwd: Optional[str] = None,
+        timeout: int = 120,
+        env: Optional[dict] = None,
+    ) -> CommandResult:
+        self.calls.append({
+            "argv": list(argv),
+            "cwd": cwd,
+            "timeout": timeout,
+            "env": env,
+        })
         argv0 = argv[0]
         # argv 가 npm 으로 시작하지만 'npm install' 과 'npm audit' 을 구분해야 함
         if argv0 == "npm" and len(argv) > 1:
@@ -503,6 +515,218 @@ class TestBackwardCompatibility:
         scanner = DependencyScanner()
         assert hasattr(scanner, "_runner")
         assert isinstance(scanner._runner, DependencyCommandRunner)
+
+
+# ============================================================
+# Wave 4-H: 자식 프로세스 env sanitization
+# ============================================================
+
+class TestRunnerForwardsEnvKwargToSubprocess:
+    """``DependencyCommandRunner.run(env=...)`` 가 ``subprocess.run`` 의
+    ``env`` 키워드로 그대로 전달되어야 한다 (pip-audit/npm 자식 프로세스에
+    sanitized env 만 넘기기 위한 seam)."""
+
+    def test_env_kwarg_passed_through_to_subprocess_run(self, monkeypatch):
+        captured: dict = {}
+
+        class _FakeProc:
+            stdout = ""
+            stderr = ""
+            returncode = 0
+
+        def _fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            "analyzer.dependency_command_runner.subprocess.run", _fake_run
+        )
+
+        runner = DependencyCommandRunner()
+        sanitized = {"PATH": "/usr/bin", "HOME": "/tmp/h"}
+        runner.run(["pip-audit"], env=sanitized)
+
+        assert captured["kwargs"].get("env") == sanitized
+
+    def test_env_kwarg_default_none_preserved(self, monkeypatch):
+        """``env=None`` (default) 면 부모 env 상속 동작이 유지되어야 한다."""
+        captured: dict = {}
+
+        class _FakeProc:
+            stdout = ""
+            stderr = ""
+            returncode = 0
+
+        def _fake_run(argv, **kwargs):
+            captured["kwargs"] = kwargs
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            "analyzer.dependency_command_runner.subprocess.run", _fake_run
+        )
+
+        runner = DependencyCommandRunner()
+        runner.run(["pip-audit"])
+
+        assert captured["kwargs"].get("env") is None
+
+
+class TestPipAuditChildEnvSanitization:
+    """pip-audit 호출 시 sanitized child env 가 전달되어야 한다."""
+
+    def _run_with_parent_env(self, monkeypatch, parent_env: dict) -> dict:
+        # 부모 env 를 통제된 dict 로 교체
+        monkeypatch.setattr(os, "environ", parent_env)
+
+        runner = _RecordingRunner()
+        runner.queue("pip-audit", stdout=json.dumps({"dependencies": []}))
+        scanner = DependencyScanner(runner=runner)
+
+        scanner.scan_requirements_text("flask==2.0.0\n")
+
+        assert len(runner.calls) == 1
+        env = runner.calls[0]["env"]
+        return env
+
+    def test_pip_audit_receives_dict_env(self, monkeypatch):
+        env = self._run_with_parent_env(
+            monkeypatch,
+            {"PATH": "/usr/bin", "HOME": "/tmp/h"},
+        )
+        assert env is not None
+        assert isinstance(env, dict)
+
+    def test_pip_audit_strips_ambient_secrets(self, monkeypatch):
+        env = self._run_with_parent_env(
+            monkeypatch,
+            {
+                "PATH": "/usr/bin",
+                "HOME": "/tmp/h",
+                "ANTHROPIC_API_KEY": "x",
+                "GITHUB_TOKEN": "x",
+                "NPM_TOKEN": "x",
+                "PYPI_TOKEN": "x",
+                "DATABASE_URL": "x",
+            },
+        )
+        for leaked in (
+            "ANTHROPIC_API_KEY",
+            "GITHUB_TOKEN",
+            "NPM_TOKEN",
+            "PYPI_TOKEN",
+            "DATABASE_URL",
+        ):
+            assert leaked not in env, f"{leaked} 가 pip-audit child env 로 누출됨"
+
+    def test_pip_audit_strips_dual_use_private_registry_vars(self, monkeypatch):
+        env = self._run_with_parent_env(
+            monkeypatch,
+            {
+                "PATH": "/usr/bin",
+                "HOME": "/tmp/h",
+                "PIP_INDEX_URL": "https://example.test/simple",
+                "PIP_EXTRA_INDEX_URL": "https://example.test/extra",
+                "PIP_CONFIG_FILE": "/tmp/pip.conf",
+            },
+        )
+        for leaked in ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_CONFIG_FILE"):
+            assert leaked not in env, (
+                f"{leaked} 는 ambient 상속 금지 — explicit capability grant 필요"
+            )
+
+    def test_pip_audit_preserves_safe_operational_vars(self, monkeypatch):
+        parent = {
+            "PATH": "/usr/bin",
+            "HOME": "/tmp/h",
+            "LANG": "en_US.UTF-8",
+            "PIP_CACHE_DIR": "/tmp/cache",
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "REQUESTS_CA_BUNDLE": "/tmp/ca.pem",
+            "XDG_CACHE_HOME": "/tmp/xdg",
+        }
+        env = self._run_with_parent_env(monkeypatch, parent)
+        for key, value in parent.items():
+            assert env.get(key) == value, f"{key} 가 sanitized env 에 보존되지 않음"
+
+
+class TestNpmChildEnvSanitization:
+    """npm install / npm audit 호출 시 sanitized child env 가 전달되어야 한다."""
+
+    def _run_with_parent_env(self, monkeypatch, parent_env: dict):
+        monkeypatch.setattr(os, "environ", parent_env)
+
+        runner = _RecordingRunner()
+        runner.queue("npm install", stdout="", returncode=0)
+        runner.queue(
+            "npm audit",
+            stdout=json.dumps({
+                "vulnerabilities": {},
+                "metadata": {"totalDependencies": 0},
+            }),
+        )
+        scanner = DependencyScanner(runner=runner)
+
+        scanner.scan_package_json_text(
+            json.dumps({"dependencies": {"lodash": "4.17.0"}})
+        )
+
+        assert len(runner.calls) == 2
+        return runner.calls[0]["env"], runner.calls[1]["env"]
+
+    def test_npm_install_and_audit_both_get_dict_env(self, monkeypatch):
+        install_env, audit_env = self._run_with_parent_env(
+            monkeypatch,
+            {"PATH": "/usr/bin", "HOME": "/tmp/h"},
+        )
+        for env in (install_env, audit_env):
+            assert env is not None
+            assert isinstance(env, dict)
+
+    def test_npm_strips_ambient_secrets_and_registry_vars(self, monkeypatch):
+        install_env, audit_env = self._run_with_parent_env(
+            monkeypatch,
+            {
+                "PATH": "/usr/bin",
+                "HOME": "/tmp/h",
+                "NPM_TOKEN": "x",
+                "GITHUB_TOKEN": "x",
+                "NPM_CONFIG_REGISTRY": "https://example.test/registry",
+                "NPM_CONFIG_USERCONFIG": "/tmp/.npmrc",
+                "NPM_CONFIG_PROXY": "http://proxy.example.test",
+                "npm_config_registry": "https://example.test/registry",
+                "DATABASE_URL": "x",
+            },
+        )
+        for env in (install_env, audit_env):
+            for leaked in (
+                "NPM_TOKEN",
+                "GITHUB_TOKEN",
+                "NPM_CONFIG_REGISTRY",
+                "NPM_CONFIG_USERCONFIG",
+                "NPM_CONFIG_PROXY",
+                "npm_config_registry",
+                "DATABASE_URL",
+            ):
+                assert leaked not in env, f"{leaked} 가 npm child env 로 누출됨"
+
+    def test_npm_preserves_safe_operational_vars(self, monkeypatch):
+        parent = {
+            "PATH": "/usr/bin",
+            "HOME": "/tmp/h",
+            "LANG": "en_US.UTF-8",
+            "NPM_CONFIG_CACHE": "/tmp/cache",
+            "NPM_CONFIG_AUDIT_LEVEL": "high",
+            "NPM_CONFIG_STRICT_SSL": "true",
+            "NODE_EXTRA_CA_CERTS": "/tmp/ca.pem",
+            "XDG_CACHE_HOME": "/tmp/xdg",
+        }
+        install_env, audit_env = self._run_with_parent_env(monkeypatch, parent)
+        for env in (install_env, audit_env):
+            for key, value in parent.items():
+                assert env.get(key) == value, (
+                    f"{key} 가 sanitized npm child env 에 보존되지 않음"
+                )
 
 
 __all__: list[str] = []
