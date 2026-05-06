@@ -21,6 +21,7 @@ from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.schemas import PatchSuggestion, PatchStatus
+from analyzer.command_env import build_child_env
 from validator.validator_command_runner import ValidatorCommandRunner
 
 
@@ -148,6 +149,7 @@ class SyntaxChecker:
             result = self._runner.run(
                 ["flake8", "--select=E9,F63,F7,F82", tmp_path],
                 timeout=10,
+                env=build_child_env(),
             )
             if result.returncode == 0:
                 return CheckResult(valid=True)
