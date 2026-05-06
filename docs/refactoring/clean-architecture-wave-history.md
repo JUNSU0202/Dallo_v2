@@ -220,7 +220,7 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-E | `67a2b79` | 공통 child env sanitizer | `analyzer/command_env.py` | allowlist + deny filter + extras |
 | 4-F | `4d2f435` | Bandit child env sanitizer | `analyzer/bandit_runner.py` | Bandit 자식 env 살균 |
 | 4-G | `aa92374` | Semgrep child env sanitizer | `analyzer/semgrep_runner.py` | Semgrep caller-specific allowlist |
-| 4-H | (로컬 머지 보류) | Dependency scanner child env sanitizer | `analyzer/dependency_command_runner.py`, `analyzer/dependency_scanner.py`, `analyzer/command_env.py` | pip-audit/npm caller-specific allowlist + AUTH deny 강화 |
+| 4-H | `00792a6` | Dependency scanner child env sanitizer | `analyzer/dependency_command_runner.py`, `analyzer/dependency_scanner.py`, `analyzer/command_env.py` | pip-audit/npm caller-specific allowlist + AUTH deny 강화 |
 
 ---
 
@@ -739,7 +739,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ### Wave 4-H — Dependency scanner child env sanitizer
 
-- 머지 커밋: 로컬 머지 보류 (구현 커밋만 존재 — 사용자 명시 승인 시점에 머지 예정)
+- 머지 커밋: `00792a6` (구현 커밋: `368b7e5 security(analyzer): Wave 4-H sanitize dependency scanner child env`)
 - 주요 파일/영역:
   - `analyzer/dependency_command_runner.py`
   - `analyzer/dependency_scanner.py`
@@ -757,12 +757,13 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - 클린 아키텍처 적합성: Wave 4-E 의 공유 boundary helper(`build_child_env`)를 그대로 재사용하고, Wave 4-G 와 동일한 *caller-specific allowlist* 패턴을 적용. `DependencyCommandRunner` 는 외부 명령 어댑터라는 단일 책임을 유지하면서, Wave 4-D/E/F/G 와 동일한 env 키워드 seam 만 노출. 정책(어떤 변수를 통과시킬지)은 도메인 caller(`DependencyScanner`) 가 보유한다.
 - 보존된 동작: pip-audit / npm install / npm audit 의 argv shape, cwd, timeout(120/60/120), JSON 파싱, fallback 분기, `pip-audit이 설치되어 있지 않습니다`/`pip-audit 미설치`/`pip-audit 출력 파싱 실패`/`pip-audit 시간 초과 (120초)`/`npm이 설치되어 있지 않습니다`/`npm audit 시간 초과 (120초)` 한국어 에러 메시지, fake runner 주입 seam, 인자 없는 생성자 동작.
 - 검증 근거:
-  - Targeted: `tests/test_dependency_scanner_runner_adapter.py` `tests/test_command_env_sanitizer.py` `tests/test_api_dependency_scanning_service.py` → 65 passed.
-  - Broader: 위 + `tests/test_static_tool_command_runner_adapter.py` `tests/test_sonar_runner_adapter.py` → 142 passed.
-  - Full: `pytest tests/ -q` → 645 passed, 5 warnings (기존 SQLAlchemy `datetime.datetime.utcnow()` deprecation + asyncio no-current-event-loop 경고로 본 wave 와 무관).
+  - Targeted: `tests/test_dependency_scanner_runner_adapter.py` `tests/test_command_env_sanitizer.py` `tests/test_api_dependency_scanning_service.py` → 65 passed in 0.20s.
+  - Broader: 위 + `tests/test_static_tool_command_runner_adapter.py` `tests/test_sonar_runner_adapter.py` → 142 passed in 0.30s.
+  - Full: `pytest tests/ -q` → 645 passed, 5 warnings in 16.21s (기존 SQLAlchemy `datetime.datetime.utcnow()` deprecation + asyncio no-current-event-loop 경고로 본 wave 와 무관).
+  - Post-merge 검증 (로컬 main, working tree clean): targeted 65 passed in 0.20s, broader 142 passed in 0.30s, full 645 passed, 5 warnings in 16.21s, fake dependency env smoke `main_dependency_fake_env_smoke PASS 3`, security scans clean.
   - 실 외부 도구 호출 0건 (pip-audit / npm / 네트워크 모두 fake runner 로 격리, parent env 는 `monkeypatch.setattr(os, "environ", ...)` 로 격리).
 - 명시적 비적용: 사설 PyPI/npm 레지스트리 자격증명 변수의 ambient 상속은 의도적으로 허용하지 않음. 향후 사설 레지스트리 기능이 product requirement 가 되면 별도 wave 에서 `extras` capability grant 패턴으로 도입.
-- Rollback: 로컬 머지 시점에 `git revert -m 1 <merge-sha>` (구현 커밋만으로 되돌릴 경우 `git revert <impl-sha>`).
+- Rollback: `git revert -m 1 00792a6` (구현 커밋만으로 되돌릴 경우 `git revert 368b7e5`).
 
 ---
 
@@ -809,10 +810,11 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ## 10. 현재 상태 (Wave 4-H 시점)
 
-- 로컬 main 의 최신 머지 커밋: `aa92374 merge: integrate Wave 4-G Semgrep env sanitizer` (Wave 4-G 시점).
-  - Wave 4-H 는 **구현 커밋만 작성**되었고, 사용자 명시 승인 시점에 로컬 main 으로 머지될 예정이다 (push 미수행 정책 유지).
+- 로컬 main 의 최신 머지 커밋: `00792a6 merge: integrate Wave 4-H dependency env sanitizer` (Wave 4-H 시점, 구현 커밋 `368b7e5 security(analyzer): Wave 4-H sanitize dependency scanner child env`).
+  - Wave 4-H 는 로컬 main 으로 머지 완료되었으며 working tree 는 clean (push 미수행 정책 유지).
 - 본 head 는 **로컬에만 존재**하며 원격으로 push 되지 않았다.
-- 마지막 검증된 전체 테스트 결과 (Wave 4-H 적용 후 worktree 기준): `645 passed, 5 warnings`.
+- 마지막 검증된 전체 테스트 결과 (Wave 4-H post-merge, 로컬 main 기준): `645 passed, 5 warnings in 16.21s` (targeted 65 passed in 0.20s, broader 142 passed in 0.30s 동반).
+  - fake dependency env smoke: `main_dependency_fake_env_smoke PASS 3`.
   - 5 warnings 는 SQLAlchemy `datetime.datetime.utcnow()` 와 asyncio no-current-event-loop 관련 기존 deprecation warnings 로, 이번 리팩터링과 무관하다.
 - 보안 스캔(추가 라인 secret-like / dangerous patterns / 운영 영역) 모두 clean.
 - 다음 권장 작업 후보:
