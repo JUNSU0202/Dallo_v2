@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional
 from pathlib import Path
 
+from analyzer.command_env import build_child_env
 from analyzer.static_tool_command_runner import StaticToolCommandRunner
 
 
@@ -111,7 +112,12 @@ class BanditRunner:
         try:
             # Bandit은 취약점 발견 시 exit code 1을 반환하므로
             # check=False로 실행 (어댑터는 returncode 를 그대로 반환)
-            proc = self._runner.run(cmd, timeout=120)
+            # Wave 4-F: 부모 환경 전체를 자식에게 상속시키지 않고
+            # ``build_child_env`` 의 보수적 allowlist + 시크릿 이름 deny filter
+            # 를 거친 sanitized env 만 전달한다. ``ANTHROPIC_API_KEY`` /
+            # ``GITHUB_TOKEN`` / ``AWS_SECRET_ACCESS_KEY`` 등 ambient 시크릿이
+            # bandit child 에 상속되어 로그/덤프로 누출되는 위험을 차단.
+            proc = self._runner.run(cmd, timeout=120, env=build_child_env())
 
             # JSON 파싱
             if proc.stdout:
