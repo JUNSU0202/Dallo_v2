@@ -267,8 +267,17 @@ class _RecordingRunner:
     def queue_exc(self, argv0: str, exc: BaseException):
         self.responses.setdefault(argv0, []).append(exc)
 
-    def run(self, argv: list[str], *, cwd: Optional[str] = None, timeout: int = 120) -> CommandResult:
-        self.calls.append({"argv": list(argv), "cwd": cwd, "timeout": timeout})
+    def run(
+        self,
+        argv: list[str],
+        *,
+        cwd: Optional[str] = None,
+        timeout: int = 120,
+        env: Optional[dict] = None,
+    ) -> CommandResult:
+        self.calls.append(
+            {"argv": list(argv), "cwd": cwd, "timeout": timeout, "env": env}
+        )
         argv0 = argv[0]
         if argv0 in self.responses and self.responses[argv0]:
             item = self.responses[argv0].pop(0)
@@ -447,6 +456,93 @@ class TestBanditParsing:
 
 
 # ============================================================
+# BanditRunner: child env sanitizer (Wave 4-F)
+# ============================================================
+
+class TestBanditChildEnvSanitizer:
+    """Wave 4-F: BanditRunner 가 부모 환경을 그대로 상속시키지 않고
+    ``build_child_env`` 로 sanitize 한 env 를 child 에 전달하는지 검증.
+
+    실제 subprocess 호출 없이 monkeypatch 로 ``os.environ`` 만 교체한 상태에서
+    ``_RecordingRunner`` 의 호출 기록을 확인한다. 값은 짧은 placeholder 만
+    사용해 실제 시크릿이 테스트에 노출되지 않도록 한다.
+    """
+
+    def _ambient_parent_env(self) -> dict[str, str]:
+        return {
+            # 필수 (allowlist 통과)
+            "PATH": "/usr/bin",
+            "HOME": "/tmp/home",
+            "LANG": "C.UTF-8",
+            "VIRTUAL_ENV": "/tmp/venv",
+            "PYTHONPATH": "/tmp/site",
+            "HTTP_PROXY": "http://proxy:3128",
+            "CI": "true",
+            # ambient 시크릿 (deny 되어야 함)
+            "ANTHROPIC_API_KEY": "x",
+            "GITHUB_TOKEN": "x",
+            "AWS_SECRET_ACCESS_KEY": "x",
+            "NPM_TOKEN": "x",
+            "DATABASE_URL": "x",
+        }
+
+    def _run_bandit_with_ambient_env(self, monkeypatch) -> dict:
+        monkeypatch.setattr(os, "environ", self._ambient_parent_env())
+
+        runner = _RecordingRunner()
+        runner.queue(
+            "bandit",
+            stdout=json.dumps({"results": [], "metrics": {"_totals": {}}}),
+        )
+        bandit = BanditRunner(runner=runner)
+        bandit.run("/tmp/target")
+
+        assert len(runner.calls) == 1
+        return runner.calls[0]
+
+    def test_bandit_child_env_is_not_none(self, monkeypatch):
+        call = self._run_bandit_with_ambient_env(monkeypatch)
+        assert call["env"] is not None
+        assert isinstance(call["env"], dict)
+
+    def test_bandit_child_env_strips_ambient_secrets(self, monkeypatch):
+        call = self._run_bandit_with_ambient_env(monkeypatch)
+        env = call["env"]
+        for secret_key in (
+            "ANTHROPIC_API_KEY",
+            "GITHUB_TOKEN",
+            "AWS_SECRET_ACCESS_KEY",
+            "NPM_TOKEN",
+            "DATABASE_URL",
+        ):
+            assert secret_key not in env, (
+                f"{secret_key} 는 child env 에서 제거되어야 합니다"
+            )
+
+    def test_bandit_child_env_preserves_required_vars(self, monkeypatch):
+        call = self._run_bandit_with_ambient_env(monkeypatch)
+        env = call["env"]
+        for required in (
+            "PATH",
+            "HOME",
+            "LANG",
+            "VIRTUAL_ENV",
+            "PYTHONPATH",
+            "HTTP_PROXY",
+            "CI",
+        ):
+            assert required in env, (
+                f"{required} 는 child env 에 보존되어야 합니다"
+            )
+
+    def test_bandit_child_env_does_not_inject_sonar_token(self, monkeypatch):
+        """Wave 4-E 에서 Sonar 전용으로 추가했던 ``SONAR_TOKEN`` extras 가
+        Bandit child env 에는 주입되지 않아야 한다."""
+        call = self._run_bandit_with_ambient_env(monkeypatch)
+        assert "SONAR_TOKEN" not in call["env"]
+
+
+# ============================================================
 # SemgrepRunner: 실제 subprocess 미사용 + argv 형태 보존
 # ============================================================
 
@@ -595,6 +691,32 @@ class TestSemgrepParsing:
         result = semgrep.run("/tmp/x.py")
         assert result.error is not None
         assert "Semgrep 출력 JSON 파싱 실패" in result.error
+
+
+# ============================================================
+# Wave 4-F: Semgrep 의도적 deferral 문서화
+# ============================================================
+
+class TestSemgrepChildEnvDeferral:
+    """Wave 4-F 에서는 Semgrep 의 child env sanitizer 적용을 의도적으로 보류한다.
+
+    이유: Semgrep 은 ``SSL_CERT_FILE`` / ``REQUESTS_CA_BUNDLE`` /
+    ``XDG_CACHE_HOME`` / ``SEMGREP_APP_TOKEN`` 등 추가 환경변수와 private
+    rules / proxy 설정에 대한 정책 결정이 더 필요하다. 별도 wave 에서
+    allowlist 와 capability extras 를 결정한 뒤 적용한다.
+
+    본 테스트는 그 deferral 을 명시화한다 — 향후 Semgrep 에 sanitizer 가
+    적용되면 이 테스트는 자연스럽게 갱신/제거된다.
+    """
+
+    def test_semgrep_runner_currently_passes_no_explicit_env(self):
+        runner = _RecordingRunner()
+        runner.queue("semgrep", stdout=json.dumps({"results": []}))
+        semgrep = SemgrepRunner(runner=runner)
+        semgrep.run("/tmp/x.py")
+
+        assert len(runner.calls) == 1
+        assert runner.calls[0]["env"] is None
 
 
 # ============================================================

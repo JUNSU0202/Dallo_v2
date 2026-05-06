@@ -102,8 +102,9 @@ class TestBanditRunner:
         captured: dict = {}
 
         class _FakeRunner:
-            def run(self, argv, *, cwd=None, timeout=120):
+            def run(self, argv, *, cwd=None, timeout=120, env=None):
                 captured["argv"] = list(argv)
+                captured["env"] = env
                 return CommandResult(
                     stdout='{"results": [], "metrics": {"_totals": {}}}',
                     stderr="",
