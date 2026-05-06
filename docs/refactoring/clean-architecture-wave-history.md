@@ -221,7 +221,7 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-F | `4d2f435` | Bandit child env sanitizer | `analyzer/bandit_runner.py` | Bandit 자식 env 살균 |
 | 4-G | `aa92374` | Semgrep child env sanitizer | `analyzer/semgrep_runner.py` | Semgrep caller-specific allowlist |
 | 4-H | `00792a6` | Dependency scanner child env sanitizer | `analyzer/dependency_command_runner.py`, `analyzer/dependency_scanner.py`, `analyzer/command_env.py` | pip-audit/npm caller-specific allowlist + AUTH deny 강화 |
-| 4-I | _(local main 머지 후 SHA 기록)_ | Validator child env sanitizer | `validator/validator_command_runner.py`, `validator/syntax_checker.py`, `validator/test_runner.py` | flake8/sandbox pytest sanitized env + sandbox pytest caller-specific allowlist |
+| 4-I | `2217036` | Validator child env sanitizer | `validator/validator_command_runner.py`, `validator/syntax_checker.py`, `validator/test_runner.py` | flake8/sandbox pytest sanitized env + sandbox pytest caller-specific allowlist |
 
 ---
 
@@ -768,8 +768,8 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ### Wave 4-I — Validator child env sanitizer
 
-- 머지 커밋: _(local main 머지 시 SHA 기록)_
-- 구현 커밋: _(이번 wave 의 `security(validator): Wave 4-I sanitize validator child env` 커밋 SHA 기록)_
+- 머지 커밋: `2217036`
+- 구현 커밋: `7fe88d8`
 - 주요 파일/영역:
   - `validator/validator_command_runner.py`
   - `validator/syntax_checker.py`
@@ -791,7 +791,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - 실 외부 도구 호출 0건 (flake8 / pytest sandbox 모두 fake runner 로 격리, parent env 는 ``monkeypatch.setattr(os, "environ", ...)`` 로 격리).
   - Security scans: secret-like 패턴 / `os.system|shell=True` / `eval|exec` / `pickle.loads?` 모두 clean (placeholder 토큰 값은 짧은 더미 ``"x"`` 만 사용).
 - 명시적 비적용: sandbox pytest 환경에서 LLM 코드가 사용할 수 있는 추가 capability (DB 접근, 외부 API 호출) 는 의도적으로 부여하지 않는다. 향후 사용자 코드가 명시적으로 그 capability 를 요구한다면 별도 wave 에서 ``extras`` capability grant 패턴으로 도입.
-- Rollback: `git revert -m 1 <merge>` (구현 커밋만으로 되돌릴 경우 `git revert <impl-sha>`).
+- Rollback: `git revert -m 1 2217036` (구현 커밋만으로 되돌릴 경우 `git revert 7fe88d8`).
 - 초보자용 설명: "flake8 는 코드 스타일을 보는 도구라 시크릿이 안 새겠지만, sandbox pytest 는 LLM 이 만든 새 코드를 실행한다. 부모 셸의 ``ANTHROPIC_API_KEY`` 같은 비밀이 그 자식 프로세스 ``os.environ`` 에 그대로 보이면, LLM 코드가 의도치 않게 (또는 prompt-injection 으로) 그 값을 읽어 외부로 보낼 수 있다. Wave 4-I 는 자식에게 진짜로 필요한 변수(PATH, HOME, LANG, VIRTUAL_ENV, pytest 운영 변수 등)만 통과시키고 나머지(특히 ``DALLO_ENCRYPTION_KEY``)는 모두 차단한다."
 
 ---
@@ -839,9 +839,9 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ## 10. 현재 상태 (Wave 4-I 시점)
 
-- 로컬 작업 브랜치(`w4i-validator-env-sanitizer`)에 Wave 4-I 구현 커밋이 추가되었다. 머지 시점 SHA 는 `git log` 로 확인.
-  - Wave 4-H 머지 커밋 `00792a6` 위에 Wave 4-I 가 단일 커밋으로 추가된다 (push 미수행 정책 유지).
-- 본 head 는 **로컬에만 존재**하며 원격으로 push 되지 않았다.
+- 로컬 `main` 에 Wave 4-I 머지 커밋 `2217036` 이 포함되어 있다 (구현 커밋 `7fe88d8`).
+  - Wave 4-H 머지 커밋 `00792a6` 위에 Wave 4-I 가 단일 커밋으로 추가되었다 (push/PR/deploy 미수행 정책 유지).
+- 본 head 는 **로컬에만 존재**하며 원격으로 push 되지 않았고, PR/deploy 도 수행되지 않았다.
 - 마지막 검증된 전체 테스트 결과 (Wave 4-I 시점): `654 passed, 5 warnings in 17.27s` (targeted 55 passed in 0.12s 동반).
   - 5 warnings 는 SQLAlchemy `datetime.datetime.utcnow()` 와 asyncio no-current-event-loop 관련 기존 deprecation warnings 로, 이번 리팩터링과 무관하다.
 - 보안 스캔(추가 라인 secret-like / dangerous patterns / 운영 영역) 모두 clean.
