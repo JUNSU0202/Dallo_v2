@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-H 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-I 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -33,7 +33,7 @@ Dallo 의 리팩터링은 **세 단계의 큰 흐름** 으로 진행되었다.
 | --- | --- | --- | --- |
 | **Wave 2 (A~S, 19 wave)** | API/라우터/서비스/부트스트랩/경로 안정화 | 단일 파일에 뭉친 책임을 라우터·서비스 계층으로 분리, 부트스트랩 부수효과 정리, 경로 안전성 강화 | `api/server.py` 거대 파일을 라우터/서비스 단위로 분해 |
 | **Wave 3 (A~J, 11 wave)** | analyzer/외부 의존 경계 추출 | subprocess·HTTP·시간 의존성을 어댑터(seam)로 분리, fakeable 테스트 가능한 구조로 전환 | `pip-audit`, Bandit, Semgrep, Sonar scanner, Sonar HTTP, polling clock 까지 모두 외부 경계 격리 |
-| **Wave 4 (A~H, 8 wave)** | validator·통합·토큰·환경 변수 보안 강화 | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 |
+| **Wave 4 (A~I, 9 wave)** | validator·통합·토큰·환경 변수 보안 강화 | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 |
 
 핵심 원칙은 다음 네 가지다.
 
@@ -221,6 +221,7 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-F | `4d2f435` | Bandit child env sanitizer | `analyzer/bandit_runner.py` | Bandit 자식 env 살균 |
 | 4-G | `aa92374` | Semgrep child env sanitizer | `analyzer/semgrep_runner.py` | Semgrep caller-specific allowlist |
 | 4-H | `00792a6` | Dependency scanner child env sanitizer | `analyzer/dependency_command_runner.py`, `analyzer/dependency_scanner.py`, `analyzer/command_env.py` | pip-audit/npm caller-specific allowlist + AUTH deny 강화 |
+| 4-I | _(local main 머지 후 SHA 기록)_ | Validator child env sanitizer | `validator/validator_command_runner.py`, `validator/syntax_checker.py`, `validator/test_runner.py` | flake8/sandbox pytest sanitized env + sandbox pytest caller-specific allowlist |
 
 ---
 
@@ -765,17 +766,45 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - 명시적 비적용: 사설 PyPI/npm 레지스트리 자격증명 변수의 ambient 상속은 의도적으로 허용하지 않음. 향후 사설 레지스트리 기능이 product requirement 가 되면 별도 wave 에서 `extras` capability grant 패턴으로 도입.
 - Rollback: `git revert -m 1 00792a6` (구현 커밋만으로 되돌릴 경우 `git revert 368b7e5`).
 
+### Wave 4-I — Validator child env sanitizer
+
+- 머지 커밋: _(local main 머지 시 SHA 기록)_
+- 구현 커밋: _(이번 wave 의 `security(validator): Wave 4-I sanitize validator child env` 커밋 SHA 기록)_
+- 주요 파일/영역:
+  - `validator/validator_command_runner.py`
+  - `validator/syntax_checker.py`
+  - `validator/test_runner.py`
+  - `tests/test_validator_command_runner_adapter.py`
+- 이전 구조: Wave 4-A 가 ``SyntaxChecker.check_with_flake8()`` 와 ``TestRunner._run_in_sandbox()`` 의 ``subprocess.run`` 호출을 ``ValidatorCommandRunner`` 어댑터로 분리했지만, 어댑터는 ``env`` 키워드를 받지 않았고 호출자도 sanitized env 를 넘기지 않았다. 결과적으로 flake8 / sandbox pytest 자식 프로세스가 부모 env 전체(LLM API 키, GitHub 토큰, 클라우드 자격증명, NPM/PyPI 토큰, ``DALLO_ENCRYPTION_KEY``, ``DALLO_API_KEYS`` 포함)를 그대로 상속받았다.
+- 문제/위험: AI/Vibe-Coding 환경에서 부모 셸/CI 에는 흔히 ``ANTHROPIC_API_KEY`` / ``GITHUB_TOKEN`` / ``AWS_SECRET_ACCESS_KEY`` / ``NPM_TOKEN`` / ``PYPI_TOKEN`` / ``DATABASE_URL`` 등 시크릿이 export 되어 있으며, Dallo 자체의 애플리케이션 시크릿 (``DALLO_ENCRYPTION_KEY``, ``DALLO_API_KEYS``) 도 부모 env 에 들어 있다. flake8 자체는 외부 네트워크를 호출하지 않지만, sandbox pytest 가 LLM 이 생성한 임의 코드를 실행한다는 점에서 위험이 가장 크다 — LLM 코드가 ``os.environ`` 을 들여다보거나 외부 호출에 사용하면 시크릿이 sandbox 로 누출되거나 임시 디렉토리 로그/네트워크 경로로 흘러나갈 수 있다.
+- 변경:
+  - ``ValidatorCommandRunner.run()`` 에 선택 키워드 인자 ``env: Optional[Mapping[str, str]] = None`` 추가. ``subprocess.run(..., env=env)`` 로 그대로 전달. ``env=None`` (default) 면 기존 부모 env 상속 동작이 유지되어 미마이그레이션 caller 호환성을 보존.
+  - ``validator/syntax_checker.py`` 의 ``check_with_flake8()`` 가 ``env=build_child_env()`` 로 호출. flake8 은 추가 운영 변수 없이 기본 allowlist 만으로 동작 가능하므로 caller-specific allowlist 를 도입하지 않는다.
+  - ``validator/test_runner.py`` 에 ``_VALIDATOR_PYTEST_ENV_ALLOWLIST`` caller-specific 상수 도입. 비-시크릿 운영 변수만 포함 (``PYTEST_ADDOPTS``, ``PYTEST_DISABLE_PLUGIN_AUTOLOAD``, ``PYTEST_VERSION``, ``PY_COLORS``, ``FORCE_COLOR``, ``NO_COLOR``, ``SSL_CERT_FILE``, ``SSL_CERT_DIR``, ``REQUESTS_CA_BUNDLE``, ``CURL_CA_BUNDLE``, ``XDG_CACHE_HOME``, ``XDG_CONFIG_HOME``, ``COVERAGE_FILE``, ``COVERAGE_RCFILE``, ``COVERAGE_PROCESS_START``). ``_run_in_sandbox()`` 가 ``env=build_child_env(allowlist=_VALIDATOR_PYTEST_ENV_ALLOWLIST)`` 로 호출.
+  - ``DALLO_ENCRYPTION_KEY`` / ``DALLO_API_KEYS`` 는 어떤 allowlist 에도 포함하지 않으며, ``extras`` capability grant 로도 자식에 주입하지 않는다. Wave 4-H 에서 보강한 ``AUTH`` substring deny + 기본 ``KEY`` substring deny 가 한 번 더 차단한다.
+- 클린 아키텍처 적합성: Wave 4-E 의 공유 boundary helper(``build_child_env``)를 그대로 재사용하고, Wave 4-G/4-H 와 동일한 *caller-specific allowlist* 패턴을 적용. ``ValidatorCommandRunner`` 는 외부 명령 어댑터라는 단일 책임을 유지하면서, Wave 4-D/E/F/G/H 와 동일한 env 키워드 seam 만 노출. 정책(어떤 변수를 통과시킬지)은 도메인 caller(``SyntaxChecker``/``TestRunner``) 가 보유한다.
+- 보존된 동작: flake8 argv ``["flake8", "--select=E9,F63,F7,F82", tmp_path]`` / timeout 10 / cwd None / ``FileNotFoundError`` AST fallback / 임시 파일 cleanup / ``CheckResult`` shape, sandbox pytest argv ``[sys.executable, "-m", "pytest", test_path, "-v", "--tb=short"]`` / cwd=tmp_dir / timeout 60 / 프로젝트 복사 동작 / "테스트 파일 없음" ``passed=None`` / ``TimeoutExpired`` 한국어 메시지 (``"테스트 실행 시간 초과 (60초)"``) / ``TestResult`` shape, fake runner 주입 seam, 인자 없는 생성자 동작.
+- 검증 근거:
+  - RED: targeted 8 failed (validator runner ``env`` kwarg 미수용 + flake8/pytest sanitized env 미주입 → 모두 `NoneType` / TypeError) + 26 passed in 0.22s.
+  - Targeted (구현 후): `tests/test_validator_command_runner_adapter.py` `tests/test_command_env_sanitizer.py` → 55 passed in 0.12s.
+  - Full: `pytest tests/ -q` → 654 passed, 5 warnings in 17.27s (기존 SQLAlchemy `datetime.datetime.utcnow()` deprecation + asyncio no-current-event-loop 경고로 본 wave 와 무관).
+  - 실 외부 도구 호출 0건 (flake8 / pytest sandbox 모두 fake runner 로 격리, parent env 는 ``monkeypatch.setattr(os, "environ", ...)`` 로 격리).
+  - Security scans: secret-like 패턴 / `os.system|shell=True` / `eval|exec` / `pickle.loads?` 모두 clean (placeholder 토큰 값은 짧은 더미 ``"x"`` 만 사용).
+- 명시적 비적용: sandbox pytest 환경에서 LLM 코드가 사용할 수 있는 추가 capability (DB 접근, 외부 API 호출) 는 의도적으로 부여하지 않는다. 향후 사용자 코드가 명시적으로 그 capability 를 요구한다면 별도 wave 에서 ``extras`` capability grant 패턴으로 도입.
+- Rollback: `git revert -m 1 <merge>` (구현 커밋만으로 되돌릴 경우 `git revert <impl-sha>`).
+- 초보자용 설명: "flake8 는 코드 스타일을 보는 도구라 시크릿이 안 새겠지만, sandbox pytest 는 LLM 이 만든 새 코드를 실행한다. 부모 셸의 ``ANTHROPIC_API_KEY`` 같은 비밀이 그 자식 프로세스 ``os.environ`` 에 그대로 보이면, LLM 코드가 의도치 않게 (또는 prompt-injection 으로) 그 값을 읽어 외부로 보낼 수 있다. Wave 4-I 는 자식에게 진짜로 필요한 변수(PATH, HOME, LANG, VIRTUAL_ENV, pytest 운영 변수 등)만 통과시키고 나머지(특히 ``DALLO_ENCRYPTION_KEY``)는 모두 차단한다."
+
 ---
 
 ## 9. 보안 강화 관점 요약
 
-이 절은 Wave 2-S → Wave 4-G 을 보안 관점으로 다시 본다.
+이 절은 Wave 2-S → Wave 4-I 을 보안 관점으로 다시 본다.
 
 ### 9.1 무엇이 줄어들었나
 
 - **secret 누출 경로 감소**
   - argv exposure: Sonar 토큰이 `-Dsonar.token=...` 로 argv 에 들어가던 위험 제거(Wave 4-D).
-  - ambient env leakage: 부모 env 의 secret-like 변수가 자식 도구로 묵시 상속되던 위험 제거(Wave 4-E ~ 4-H). Wave 4-H 는 pip-audit/npm 의 사설 레지스트리·자격증명 변수까지 ambient 상속을 차단하고 `AUTH` substring 기반 deny 보강을 추가했다.
+  - ambient env leakage: 부모 env 의 secret-like 변수가 자식 도구로 묵시 상속되던 위험 제거(Wave 4-E ~ 4-I). Wave 4-H 는 pip-audit/npm 의 사설 레지스트리·자격증명 변수까지 ambient 상속을 차단하고 `AUTH` substring 기반 deny 보강을 추가했고, Wave 4-I 는 validator 의 flake8 와 sandbox pytest 자식 프로세스까지 같은 sanitizer 를 적용해 LLM 이 생성한 코드가 부모 env 의 ``ANTHROPIC_API_KEY`` / ``GITHUB_TOKEN`` / ``DALLO_ENCRYPTION_KEY`` / ``DALLO_API_KEYS`` 같은 시크릿에 닿지 못하게 했다.
 - **외부 명령 보안 통제 일원화**
   - `subprocess.run` 호출이 어댑터(`StaticToolCommandRunner`, `DependencyCommandRunner`, `ValidatorCommandRunner`) 에 모임.
   - shell=True 금지, list-argv 강제, timeout 명시.
@@ -808,18 +837,17 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-## 10. 현재 상태 (Wave 4-H 시점)
+## 10. 현재 상태 (Wave 4-I 시점)
 
-- 로컬 main 의 최신 머지 커밋: `00792a6 merge: integrate Wave 4-H dependency env sanitizer` (Wave 4-H 시점, 구현 커밋 `368b7e5 security(analyzer): Wave 4-H sanitize dependency scanner child env`).
-  - Wave 4-H 는 로컬 main 으로 머지 완료되었으며 working tree 는 clean (push 미수행 정책 유지).
+- 로컬 작업 브랜치(`w4i-validator-env-sanitizer`)에 Wave 4-I 구현 커밋이 추가되었다. 머지 시점 SHA 는 `git log` 로 확인.
+  - Wave 4-H 머지 커밋 `00792a6` 위에 Wave 4-I 가 단일 커밋으로 추가된다 (push 미수행 정책 유지).
 - 본 head 는 **로컬에만 존재**하며 원격으로 push 되지 않았다.
-- 마지막 검증된 전체 테스트 결과 (Wave 4-H post-merge, 로컬 main 기준): `645 passed, 5 warnings in 16.21s` (targeted 65 passed in 0.20s, broader 142 passed in 0.30s 동반).
-  - fake dependency env smoke: `main_dependency_fake_env_smoke PASS 3`.
+- 마지막 검증된 전체 테스트 결과 (Wave 4-I 시점): `654 passed, 5 warnings in 17.27s` (targeted 55 passed in 0.12s 동반).
   - 5 warnings 는 SQLAlchemy `datetime.datetime.utcnow()` 와 asyncio no-current-event-loop 관련 기존 deprecation warnings 로, 이번 리팩터링과 무관하다.
 - 보안 스캔(추가 라인 secret-like / dangerous patterns / 운영 영역) 모두 clean.
 - 다음 권장 작업 후보:
   - 사설 PyPI/npm 레지스트리 capability grant wave (필요해질 때): pip 의 `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL` 와 npm 의 `NPM_CONFIG_REGISTRY` + `_authToken` 을 명시적 `DependencyScanner` 생성자 인자 + `build_child_env(extras=...)` 패턴으로 도입.
-  - Validator child env sanitizer: `validator/validator_command_runner.py` 의 flake8/pytest 호출에도 동일한 caller-specific allowlist 패턴 적용 검토.
+  - Sandbox pytest 격리 강화: 별도 user 또는 chroot 등 OS 수준 격리 검토 (현재는 환경 변수 통제만 강화).
 
 ---
 
@@ -846,4 +874,4 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-*문서 버전: Wave 4-H 시점 (2026-05-06).*
+*문서 버전: Wave 4-I 시점 (2026-05-06).*

@@ -233,7 +233,7 @@ class TestValidatorCommandRunnerCallShape:
 # ============================================================
 
 class _RecordingRunner:
-    """argv / cwd / timeout 호출 이력을 보관하고, 사전 등록된 응답을 돌려준다."""
+    """argv / cwd / timeout / env 호출 이력을 보관하고, 사전 등록된 응답을 돌려준다."""
 
     def __init__(self):
         self.calls: list[dict] = []
@@ -253,8 +253,11 @@ class _RecordingRunner:
         *,
         cwd: Optional[str] = None,
         timeout: Optional[float] = None,
+        env: Optional[dict] = None,
     ) -> CommandResult:
-        self.calls.append({"argv": list(argv), "cwd": cwd, "timeout": timeout})
+        self.calls.append(
+            {"argv": list(argv), "cwd": cwd, "timeout": timeout, "env": env}
+        )
         if self.responses:
             item = self.responses.pop(0)
             if isinstance(item, BaseException):
@@ -454,6 +457,231 @@ class TestBackwardCompatibility:
         tr = ValidatorTestRunner(project_root=str(tmp_path))
         assert tr.project_root == str(tmp_path)
         assert isinstance(tr._runner, ValidatorCommandRunner)
+
+
+# ============================================================
+# Wave 4-I: 자식 프로세스 env sanitization
+# ============================================================
+
+
+class TestRunnerForwardsEnvKwargToSubprocess:
+    """``ValidatorCommandRunner.run(env=...)`` 가 ``subprocess.run`` 의
+    ``env`` 키워드로 그대로 전달되어야 한다 (flake8/sandbox pytest 자식
+    프로세스에 sanitized env 만 넘기기 위한 seam, Wave 4-I)."""
+
+    def test_env_kwarg_passed_through_to_subprocess_run(self, monkeypatch):
+        captured: dict = {}
+
+        class _FakeProc:
+            stdout = ""
+            stderr = ""
+            returncode = 0
+
+        def _fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            "validator.validator_command_runner.subprocess.run", _fake_run
+        )
+
+        runner = ValidatorCommandRunner()
+        sanitized = {"PATH": "/usr/bin", "HOME": "/tmp/h"}
+        runner.run(["flake8", "/tmp/x.py"], env=sanitized)
+
+        assert captured["kwargs"].get("env") == sanitized
+
+    def test_env_kwarg_default_none_preserved(self, monkeypatch):
+        """``env=None`` (default) 면 부모 env 상속 동작이 유지되어야 한다."""
+        captured: dict = {}
+
+        class _FakeProc:
+            stdout = ""
+            stderr = ""
+            returncode = 0
+
+        def _fake_run(argv, **kwargs):
+            captured["kwargs"] = kwargs
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            "validator.validator_command_runner.subprocess.run", _fake_run
+        )
+
+        runner = ValidatorCommandRunner()
+        runner.run(["flake8", "/tmp/x.py"])
+
+        assert captured["kwargs"].get("env") is None
+
+
+class TestSyntaxCheckerChildEnvSanitization:
+    """flake8 호출 시 sanitized child env 가 전달되어야 한다 (Wave 4-I)."""
+
+    def _run_with_parent_env(self, monkeypatch, parent_env: dict) -> dict:
+        monkeypatch.setattr(os, "environ", parent_env)
+
+        runner = _RecordingRunner()
+        runner.queue(stdout="", stderr="", returncode=0)
+        checker = SyntaxChecker(runner=runner)
+
+        checker.check_with_flake8("x = 1\n")
+
+        assert len(runner.calls) == 1
+        return runner.calls[0]["env"]
+
+    def test_flake8_receives_dict_env(self, monkeypatch):
+        env = self._run_with_parent_env(
+            monkeypatch,
+            {"PATH": "/usr/bin", "HOME": "/tmp/h"},
+        )
+        assert env is not None
+        assert isinstance(env, dict)
+
+    def test_flake8_strips_ambient_secrets(self, monkeypatch):
+        env = self._run_with_parent_env(
+            monkeypatch,
+            {
+                "PATH": "/usr/bin",
+                "HOME": "/tmp/h",
+                "ANTHROPIC_API_KEY": "x",
+                "GITHUB_TOKEN": "x",
+                "AWS_SECRET_ACCESS_KEY": "x",
+                "NPM_TOKEN": "x",
+                "PYPI_TOKEN": "x",
+                "DALLO_ENCRYPTION_KEY": "x",
+                "DALLO_API_KEYS": "x",
+            },
+        )
+        for leaked in (
+            "ANTHROPIC_API_KEY",
+            "GITHUB_TOKEN",
+            "AWS_SECRET_ACCESS_KEY",
+            "NPM_TOKEN",
+            "PYPI_TOKEN",
+            "DALLO_ENCRYPTION_KEY",
+            "DALLO_API_KEYS",
+        ):
+            assert leaked not in env, f"{leaked} 가 flake8 child env 로 누출됨"
+
+    def test_flake8_preserves_safe_operational_vars(self, monkeypatch):
+        parent = {
+            "PATH": "/usr/bin",
+            "HOME": "/tmp/h",
+            "LANG": "en_US.UTF-8",
+            "VIRTUAL_ENV": "/tmp/venv",
+        }
+        env = self._run_with_parent_env(monkeypatch, parent)
+        for key, value in parent.items():
+            assert env.get(key) == value, f"{key} 가 sanitized env 에 보존되지 않음"
+
+
+def _make_minimal_project_for_env(tmp_path) -> str:
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "target.py").write_text("x = 1\n", encoding="utf-8")
+    tests = proj / "tests"
+    tests.mkdir()
+    (tests / "test_dummy.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    return str(proj)
+
+
+class TestTestRunnerChildEnvSanitization:
+    """sandbox pytest 호출 시 sanitized child env 가 전달되어야 한다 (Wave 4-I)."""
+
+    def _run_with_parent_env(
+        self, monkeypatch, tmp_path, parent_env: dict
+    ) -> dict:
+        monkeypatch.setattr(os, "environ", parent_env)
+
+        proj_root = _make_minimal_project_for_env(tmp_path)
+        runner = _RecordingRunner()
+        runner.queue(stdout="1 passed", stderr="", returncode=0)
+
+        tr = ValidatorTestRunner(project_root=proj_root, runner=runner)
+        tr._run_in_sandbox(
+            fixed_code="x = 2\n",
+            original_file_path="target.py",
+        )
+
+        assert len(runner.calls) == 1
+        return runner.calls[0]["env"]
+
+    def test_pytest_receives_dict_env(self, monkeypatch, tmp_path):
+        env = self._run_with_parent_env(
+            monkeypatch,
+            tmp_path,
+            {"PATH": "/usr/bin", "HOME": "/tmp/h"},
+        )
+        assert env is not None
+        assert isinstance(env, dict)
+
+    def test_pytest_strips_ambient_secrets(self, monkeypatch, tmp_path):
+        env = self._run_with_parent_env(
+            monkeypatch,
+            tmp_path,
+            {
+                "PATH": "/usr/bin",
+                "HOME": "/tmp/h",
+                "ANTHROPIC_API_KEY": "x",
+                "GITHUB_TOKEN": "x",
+                "AWS_SECRET_ACCESS_KEY": "x",
+                "NPM_TOKEN": "x",
+                "PYPI_TOKEN": "x",
+                "DALLO_ENCRYPTION_KEY": "x",
+                "DALLO_API_KEYS": "x",
+            },
+        )
+        for leaked in (
+            "ANTHROPIC_API_KEY",
+            "GITHUB_TOKEN",
+            "AWS_SECRET_ACCESS_KEY",
+            "NPM_TOKEN",
+            "PYPI_TOKEN",
+            "DALLO_ENCRYPTION_KEY",
+            "DALLO_API_KEYS",
+        ):
+            assert leaked not in env, f"{leaked} 가 sandbox pytest child env 로 누출됨"
+
+    def test_pytest_preserves_safe_operational_vars(self, monkeypatch, tmp_path):
+        parent = {
+            "PATH": "/usr/bin",
+            "HOME": "/tmp/h",
+            "LANG": "en_US.UTF-8",
+            "VIRTUAL_ENV": "/tmp/venv",
+            "PYTEST_ADDOPTS": "-p no:cacheprovider",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "PY_COLORS": "0",
+            "NO_COLOR": "1",
+            "SSL_CERT_FILE": "/tmp/ca.pem",
+            "REQUESTS_CA_BUNDLE": "/tmp/ca.pem",
+            "XDG_CACHE_HOME": "/tmp/xdg",
+            "COVERAGE_FILE": "/tmp/.coverage",
+        }
+        env = self._run_with_parent_env(monkeypatch, tmp_path, parent)
+        for key, value in parent.items():
+            assert env.get(key) == value, (
+                f"{key} 가 sandbox pytest sanitized env 에 보존되지 않음"
+            )
+
+    def test_pytest_does_not_grant_dallo_keys_via_allowlist(
+        self, monkeypatch, tmp_path
+    ):
+        """``DALLO_ENCRYPTION_KEY`` / ``DALLO_API_KEYS`` 는 allowlist 에 들어
+        있어선 안 되며 deny filter 로 한 번 더 차단되어야 한다."""
+        env = self._run_with_parent_env(
+            monkeypatch,
+            tmp_path,
+            {
+                "PATH": "/usr/bin",
+                "DALLO_ENCRYPTION_KEY": "x",
+                "DALLO_API_KEYS": "x",
+            },
+        )
+        assert "DALLO_ENCRYPTION_KEY" not in env
+        assert "DALLO_API_KEYS" not in env
 
 
 __all__: list[str] = []

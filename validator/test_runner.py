@@ -22,7 +22,32 @@ from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.schemas import PatchSuggestion, PatchStatus
+from analyzer.command_env import build_child_env
 from validator.validator_command_runner import ValidatorCommandRunner
+
+
+# Wave 4-I: sandbox pytest 전용 child env allowlist.
+# build_child_env 의 기본 allowlist (PATH/HOME/LANG/proxy/VIRTUAL_ENV 등) 외에,
+# pytest 가 정상 동작하기 위해 필요한 비-시크릿 운영 변수만 추가한다.
+# ``DALLO_ENCRYPTION_KEY`` / ``DALLO_API_KEYS`` 등 애플리케이션 시크릿은
+# allowlist 에 포함하지 않으며, deny filter 로 한 번 더 차단된다.
+_VALIDATOR_PYTEST_ENV_ALLOWLIST: tuple[str, ...] = (
+    "PYTEST_ADDOPTS",
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
+    "PYTEST_VERSION",
+    "PY_COLORS",
+    "FORCE_COLOR",
+    "NO_COLOR",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "COVERAGE_FILE",
+    "COVERAGE_RCFILE",
+    "COVERAGE_PROCESS_START",
+)
 
 
 @dataclass
@@ -138,6 +163,7 @@ class TestRunner:
                 [sys.executable, "-m", "pytest", test_path, "-v", "--tb=short"],
                 cwd=tmp_dir,
                 timeout=60,
+                env=build_child_env(allowlist=_VALIDATOR_PYTEST_ENV_ALLOWLIST),
             )
 
             return TestResult(
