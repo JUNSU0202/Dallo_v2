@@ -18,7 +18,26 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from analyzer.bandit_runner import Vulnerability, AnalysisResult
+from analyzer.command_env import build_child_env
 from analyzer.static_tool_command_runner import StaticToolCommandRunner
+
+
+# Wave 4-G: Semgrep 전용 child env allowlist.
+# build_child_env 의 기본 allowlist (PATH/HOME/LANG/proxy 등) 외에,
+# Semgrep 이 정상 동작하기 위해 필요한 비-시크릿 운영 변수만 추가한다.
+# ``SEMGREP_APP_TOKEN`` 같은 시크릿은 의도적으로 포함하지 않는다 — cloud /
+# private rules 토큰 지원은 향후 명시적 capability extras 작업으로 분리.
+_SEMGREP_ENV_ALLOWLIST: tuple[str, ...] = (
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "SEMGREP_SETTINGS_FILE",
+    "SEMGREP_SEND_METRICS",
+    "SEMGREP_ENABLE_VERSION_CHECK",
+)
 
 
 # 파일 확장자 → 언어 매핑
@@ -102,7 +121,16 @@ class SemgrepRunner:
         ]
 
         try:
-            proc = self._runner.run(cmd, timeout=120)
+            # Wave 4-G: 부모 환경 전체를 자식에게 상속시키지 않고
+            # ``build_child_env`` 의 보수적 allowlist + 시크릿 이름 deny filter
+            # 를 거친 sanitized env 만 전달한다. ``ANTHROPIC_API_KEY`` /
+            # ``GITHUB_TOKEN`` / ``AWS_SECRET_ACCESS_KEY`` / ``SEMGREP_APP_TOKEN``
+            # 등 ambient 시크릿이 semgrep child 로 누출되는 것을 차단한다.
+            proc = self._runner.run(
+                cmd,
+                timeout=120,
+                env=build_child_env(allowlist=_SEMGREP_ENV_ALLOWLIST),
+            )
 
             output = proc.stdout
             if not output:
