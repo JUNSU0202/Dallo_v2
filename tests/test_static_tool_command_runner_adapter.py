@@ -694,29 +694,115 @@ class TestSemgrepParsing:
 
 
 # ============================================================
-# Wave 4-F: Semgrep 의도적 deferral 문서화
+# SemgrepRunner: child env sanitizer (Wave 4-G)
 # ============================================================
 
-class TestSemgrepChildEnvDeferral:
-    """Wave 4-F 에서는 Semgrep 의 child env sanitizer 적용을 의도적으로 보류한다.
+class TestSemgrepChildEnvSanitizer:
+    """Wave 4-G: SemgrepRunner 가 부모 환경을 그대로 상속시키지 않고
+    ``build_child_env`` + Semgrep 전용 allowlist 로 sanitize 한 env 를 child
+    에 전달하는지 검증.
 
-    이유: Semgrep 은 ``SSL_CERT_FILE`` / ``REQUESTS_CA_BUNDLE`` /
-    ``XDG_CACHE_HOME`` / ``SEMGREP_APP_TOKEN`` 등 추가 환경변수와 private
-    rules / proxy 설정에 대한 정책 결정이 더 필요하다. 별도 wave 에서
-    allowlist 와 capability extras 를 결정한 뒤 적용한다.
-
-    본 테스트는 그 deferral 을 명시화한다 — 향후 Semgrep 에 sanitizer 가
-    적용되면 이 테스트는 자연스럽게 갱신/제거된다.
+    실제 subprocess 호출 없이 monkeypatch 로 ``os.environ`` 만 교체한 상태에서
+    ``_RecordingRunner`` 의 호출 기록을 확인한다. 값은 짧은 placeholder 만
+    사용해 실제 시크릿이 테스트에 노출되지 않도록 한다.
     """
 
-    def test_semgrep_runner_currently_passes_no_explicit_env(self):
+    def _ambient_parent_env(self) -> dict[str, str]:
+        return {
+            # 필수 (기본 allowlist 통과)
+            "PATH": "/usr/bin",
+            "HOME": "/tmp/home",
+            "LANG": "C.UTF-8",
+            "HTTP_PROXY": "http://proxy:3128",
+            "CI": "true",
+            # Semgrep 전용 운영 변수 (caller-level allowlist 통과)
+            "SSL_CERT_FILE": "/etc/ssl/certs/ca.pem",
+            "SSL_CERT_DIR": "/etc/ssl/certs",
+            "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/ca.pem",
+            "CURL_CA_BUNDLE": "/etc/ssl/certs/ca.pem",
+            "XDG_CACHE_HOME": "/tmp/cache",
+            "XDG_CONFIG_HOME": "/tmp/config",
+            "SEMGREP_SETTINGS_FILE": "/tmp/semgrep.yml",
+            "SEMGREP_SEND_METRICS": "off",
+            "SEMGREP_ENABLE_VERSION_CHECK": "0",
+            # ambient 시크릿 (deny 되어야 함)
+            "ANTHROPIC_API_KEY": "x",
+            "GITHUB_TOKEN": "x",
+            "AWS_SECRET_ACCESS_KEY": "x",
+            "NPM_TOKEN": "x",
+            "DATABASE_URL": "x",
+            "SEMGREP_APP_TOKEN": "x",
+            "SONAR_TOKEN": "x",
+        }
+
+    def _run_semgrep_with_ambient_env(self, monkeypatch) -> dict:
+        monkeypatch.setattr(os, "environ", self._ambient_parent_env())
+
         runner = _RecordingRunner()
         runner.queue("semgrep", stdout=json.dumps({"results": []}))
         semgrep = SemgrepRunner(runner=runner)
         semgrep.run("/tmp/x.py")
 
         assert len(runner.calls) == 1
-        assert runner.calls[0]["env"] is None
+        return runner.calls[0]
+
+    def test_semgrep_child_env_is_not_none(self, monkeypatch):
+        call = self._run_semgrep_with_ambient_env(monkeypatch)
+        assert call["env"] is not None
+        assert isinstance(call["env"], dict)
+
+    def test_semgrep_child_env_strips_ambient_secrets(self, monkeypatch):
+        call = self._run_semgrep_with_ambient_env(monkeypatch)
+        env = call["env"]
+        for secret_key in (
+            "ANTHROPIC_API_KEY",
+            "GITHUB_TOKEN",
+            "AWS_SECRET_ACCESS_KEY",
+            "NPM_TOKEN",
+            "DATABASE_URL",
+            "SEMGREP_APP_TOKEN",
+        ):
+            assert secret_key not in env, (
+                f"{secret_key} 는 child env 에서 제거되어야 합니다"
+            )
+
+    def test_semgrep_child_env_preserves_required_base_vars(self, monkeypatch):
+        call = self._run_semgrep_with_ambient_env(monkeypatch)
+        env = call["env"]
+        for required in (
+            "PATH",
+            "HOME",
+            "LANG",
+            "HTTP_PROXY",
+            "CI",
+        ):
+            assert required in env, (
+                f"{required} 는 child env 에 보존되어야 합니다"
+            )
+
+    def test_semgrep_child_env_preserves_semgrep_operational_vars(self, monkeypatch):
+        call = self._run_semgrep_with_ambient_env(monkeypatch)
+        env = call["env"]
+        for required in (
+            "SSL_CERT_FILE",
+            "REQUESTS_CA_BUNDLE",
+            "CURL_CA_BUNDLE",
+            "SSL_CERT_DIR",
+            "XDG_CACHE_HOME",
+            "XDG_CONFIG_HOME",
+            "SEMGREP_SETTINGS_FILE",
+            "SEMGREP_SEND_METRICS",
+            "SEMGREP_ENABLE_VERSION_CHECK",
+        ):
+            assert required in env, (
+                f"{required} 는 Semgrep child env 에 보존되어야 합니다"
+            )
+
+    def test_semgrep_child_env_does_not_inject_sonar_token(self, monkeypatch):
+        """Wave 4-E 에서 Sonar 전용으로 추가했던 ``SONAR_TOKEN`` 이
+        Semgrep child env 에는 주입되지 않아야 한다 (default deny 적용)."""
+        call = self._run_semgrep_with_ambient_env(monkeypatch)
+        assert "SONAR_TOKEN" not in call["env"]
 
 
 # ============================================================
