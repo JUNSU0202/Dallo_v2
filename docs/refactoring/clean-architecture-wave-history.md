@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-J 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-K 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -833,6 +833,50 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - 신규 caller-specific allowlist 추가/삭제, deny substring 변경, extras 동작 변경, validator/analyzer 의 어댑터 시그니처 변경, ``shared/schemas.py`` 변경 모두 비적용.
 - Rollback: `git revert -m 1 4a77782` (구현 커밋만 되돌릴 경우 `git revert cdd1399`). 되돌려도 호환성 shim 패턴이 사라지는 것뿐, validator 가 다시 analyzer 를 import 하는 4-I 시점 동작으로 복귀한다.
 - 초보자용 설명: "Wave 4-E 가 만든 자식 env sanitizer 는 analyzer 전용이 아니라 *모두가 쓰는 보안 헬퍼* 다. 그런데 파일이 analyzer 폴더에 있다 보니, validator 가 그 함수를 쓰려고 analyzer 를 import 해야 했다. Wave 4-J 는 그 헬퍼를 ``shared/`` 로 옮기고, 옛 위치는 ‘이 함수는 사실 shared 에 있어요’ 라고 가리키는 빈 껍데기(shim) 만 남겼다. 동작은 한 글자도 바뀌지 않았다."
+
+### Wave 4-K — Validator sandbox 경로/심볼릭 링크/cleanup 하드닝
+
+- 머지 커밋: TBD (Hermes 머지 시 채움)
+- 구현 커밋: TBD (구현 커밋 후 채움)
+- 주요 파일/영역:
+  - `validator/test_runner.py`
+  - `tests/test_validator_sandbox_hardening.py` (신규 회귀 테스트)
+- 이전 구조: Wave 4-A 가 ``TestRunner._run_in_sandbox()`` 의 ``subprocess.run`` 호출을 ``ValidatorCommandRunner`` 어댑터로 분리했고, Wave 4-I 가 sandbox pytest 자식 프로세스에 sanitized child env 만 전달하도록 했다. 그러나 sandbox 디렉토리 자체의 *경로/파일 안전성* 은 별도로 보강하지 않은 상태였다. ``original_file_path`` 는 호출자가 넘기는 임의의 문자열이고, ``_run_in_sandbox()`` 는 ``os.path.join(tmp_dir, original_file_path)`` 후 ``os.path.exists(...)`` 만 체크한 뒤 그대로 ``open(..., "w")`` 로 ``fixed_code`` 를 기록했다. 또한 프로젝트 복사는 ``shutil.copytree(src, dst, ignore=shutil.ignore_patterns(...))`` 만 사용했고 ``symlinks`` / ``ignore_dangling_symlinks`` 인자가 명시되지 않았다.
+- 문제/위험:
+  - **경로 traversal**: ``original_file_path = "../outside.py"`` 또는 절대 경로 (``"/etc/passwd"`` 등) 가 들어오면 ``os.path.join(tmp_dir, ...)`` 가 sandbox 바깥 경로를 만들고, 해당 외부 파일이 존재하면 ``fixed_code`` 로 그대로 덮어써질 수 있었다. ``"safe/../../outside.py"`` 같은 중첩 traversal 도 동일하게 sandbox 바깥을 가리킬 수 있었다.
+  - **심볼릭 링크 leakage**: ``shutil.copytree`` 의 ``symlinks=False`` 기본 동작은 link 를 *따라가* 대상 내용을 일반 파일로 복사한다. 즉 프로젝트 root 또는 서브 디렉토리에 외부 파일을 가리키는 symlink 가 있으면 그 외부 파일의 내용이 sandbox 안에 일반 파일로 복사되어, LLM 이 생성해 sandbox 에서 실행되는 코드가 그 내용을 읽을 수 있었다.
+  - **dangling symlink**: 대상이 없는 symlink 가 서브 디렉토리에 있으면 ``shutil.copytree`` 가 ``Error`` 를 던져 sandbox 셋업이 깨졌다 — robustness 결여.
+- 변경:
+  - ``validator/test_runner.py`` 에 ``_is_safe_sandbox_relative_path(base, candidate)`` 헬퍼 도입. ``candidate`` 가 빈 문자열, 절대 경로, 또는 ``base`` 와 동일하거나 ``base + os.sep`` 로 시작하지 않는 경로인 경우 ``False`` 를 반환한다. ``os.path.realpath`` 정규화로 중첩 traversal 도 차단한다.
+  - ``_run_in_sandbox()`` 가 ``tempfile.mkdtemp`` 직후, 프로젝트 복사 *이전에* ``_is_safe_sandbox_relative_path(tmp_dir, original_file_path)`` 검증을 수행. 안전하지 않으면 ``ValueError("안전하지 않은 original_file_path (sandbox 바깥 경로)")`` 를 raise — 기존 ``except Exception`` 분기로 흡수되어 ``TestResult(passed=False, error="테스트 실행 오류: ...")`` 를 반환하고, ``finally`` 의 ``shutil.rmtree(tmp_dir, ignore_errors=True)`` 가 sandbox 디렉토리를 정리한다.
+  - 프로젝트 복사 시 symlink 정책을 명시적으로 한다:
+    - ``shutil.copytree(..., symlinks=False, ignore_dangling_symlinks=True, ignore=_make_sandbox_copy_ignore())``.
+    - ``_make_sandbox_copy_ignore()`` 는 기존 ``shutil.ignore_patterns("__pycache__", "*.pyc", ".git")`` 결과에 *디렉토리 안의 모든 symlink 항목* 을 추가로 무시 목록에 더한다. ``symlinks=False`` 가 link 를 따라가 일반 파일로 복사하는 동작과 결합되어도 link 자체가 사전 차단되므로 외부 대상 내용은 sandbox 로 복사되지 않는다.
+    - 프로젝트 root 의 최상위 항목이 symlink 인 경우 ``os.path.islink(src)`` 검사로 사전 스킵.
+  - 기존 ``shutil.rmtree(tmp_dir, ignore_errors=True)`` 의 finally cleanup 동작은 그대로 유지 — 성공 / 실패 / 예외 / 경로 거부 어느 경로에서든 sandbox 디렉토리가 잔존하지 않는다.
+- 클린 아키텍처 적합성: ``TestRunner`` (검증 도메인) 의 책임 — “LLM 수정 코드를 격리된 임시 환경에서 시험” — 의 *격리 경계* 자체를 도메인 안에서 강화한다. 외부 어댑터(``ValidatorCommandRunner``) 시그니처와 환경 sanitizer (``shared.command_env.build_child_env``) 는 손대지 않는다. 동일 도메인 안의 path safety 한 가지 책임만 추가.
+- 보존된 동작:
+  - 빈/누락 ``fixed_code`` → ``patch.test_passed=False`` + ``status=FAILED``.
+  - ``syntax_valid=False`` → sandbox 미진입.
+  - 정상 상대 경로 (``target.py``, ``pkg/module.py``) 에 대해 fake runner 가 동일한 argv (``[sys.executable, "-m", "pytest", test_path, "-v", "--tb=short"]``) / cwd=tmp_dir / timeout=60 / sanitized env 로 호출됨.
+  - 테스트 디렉토리 부재 또는 비어있음 → ``passed=None`` + 한국어 메시지 (``"테스트 파일 없음 - 문법 검사만 완료"``) 반환, ``VERIFIED`` 승격 안 함.
+  - ``subprocess.TimeoutExpired`` → ``"테스트 실행 시간 초과 (60초)"`` 한국어 메시지 보존.
+  - 일반 ``Exception`` → ``"테스트 실행 오류: {str(e)}"`` 한국어 prefix 보존 (Wave 4-K 가 도입한 ``ValueError`` 도 동일 분기로 흡수).
+  - ``TestResult`` shape, ``PatchSuggestion`` 매핑 (``test_passed`` / ``status`` / ``explanation`` 추가) 그대로.
+  - fake runner 주입 seam, 기본 생성자 동작, 기존 sanitized env allowlist (``_VALIDATOR_PYTEST_ENV_ALLOWLIST``) 그대로.
+  - ``shared/schemas.py`` 변경 없음.
+- 검증 근거:
+  - RED: ``tests/test_validator_sandbox_hardening.py`` 의 6 개 신규 테스트 fail (``../outside.py`` 가 외부 파일을 덮어씀, 절대 외부 경로가 외부 파일을 덮어씀, 중첩 traversal 미차단, 경로 거부 시 cleanup 검증, symlink 외부 내용 sandbox 누출, dangling symlink 가 sandbox 셋업 깨뜨림) + 7 passed (정상 상대 경로 / cleanup 성공 케이스 / AST 가드 — 회귀 가드 역할).
+  - GREEN targeted: ``tests/test_validator_sandbox_hardening.py`` ``tests/test_validator_command_runner_adapter.py`` ``tests/test_command_env_neutral_boundary.py`` ``tests/test_command_env_sanitizer.py`` → **75 passed in 0.17s**.
+  - GREEN full: ``pytest tests/ -q`` → **674 passed, 5 warnings in 17.32s**. 5 warnings 는 Wave 4-K 와 무관한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로 본 wave 의 blocker 가 아니다 (Wave 4-J 시점 661 → +13 신규 회귀 테스트).
+  - 실 외부 도구 호출 0건 — 신규 테스트는 모두 fake ``_RecordingRunner`` / ``_InspectingRunner`` 로 sandbox pytest 호출을 격리. ``tempfile.mkdtemp`` 만 stdlib 임시 디렉토리를 사용한다.
+  - 추가 라인 보안 스캔: ``validator/test_runner.py`` 본문에 ``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``subprocess.run`` 직접 호출 모두 부재 — AST 정적 가드 (``TestTestRunnerSourceStaticGuards``) 와 기존 Wave 4-A 의 ``_calls_with_shell_true`` / ``_direct_subprocess_run_calls`` 가드로 이중 보장.
+- 명시적 비적용 (의도적 비행동):
+  - Docker / 컨테이너 격리, OS user 격리, chroot, Linux resource limits, network namespaces, CI / root 권한 변경 — 모두 본 wave 범위 밖. 본 wave 는 stdlib (``shutil`` / ``tempfile`` / ``os.path``) 만 사용한 *경로/심볼릭 링크/cleanup* 하드닝에 한정한다.
+  - ``ValidatorCommandRunner`` 시그니처 변경, ``build_child_env`` allowlist 변경, ``shared/schemas.py`` 변경, 새 caller-specific allowlist 도입 모두 비적용.
+  - 새 한국어 에러 문자열 도입은 최소화 — 기존 ``"테스트 실행 오류: ..."`` 분기를 그대로 사용해 호출자 (``run()``) 의 ``patch.explanation`` 누적 동작을 깨지 않는다.
+- Rollback: `git revert -m 1 <merge>` (구현 커밋만 되돌릴 경우 `git revert <impl>`). 되돌리면 traversal/symlink 노출 위험이 다시 열리지만, 도메인 시그니처는 변하지 않는다.
+- 초보자용 설명: "검증기는 LLM 이 만든 새 코드를 임시 폴더(sandbox)에 떨어뜨리고 그 안에서 pytest 를 돌린다. 그런데 ‘이 파일을 수정해 주세요’ 라고 호출자가 넘기는 경로가 ``../bashrc`` 처럼 폴더 바깥을 가리키면, 그 외부 파일을 LLM 이 만든 코드로 덮어쓸 수 있었다. 또 프로젝트 안에 ‘저쪽 비밀 파일’ 을 가리키는 symlink 가 있으면 sandbox 복사 과정이 그 비밀 파일을 통째로 sandbox 안으로 복사해, LLM 코드가 그 내용을 읽을 수 있었다. Wave 4-K 는 (1) 경로가 sandbox 안쪽인지 ``realpath`` 비교로 확인하고 아니면 거부, (2) 복사할 때 symlink 항목은 아예 무시, (3) 깨진 symlink 가 있어도 sandbox 셋업이 멈추지 않게 했다. 끝나면 sandbox 폴더는 성공/실패/거부 어느 쪽이든 항상 지운다."
 
 ---
 
