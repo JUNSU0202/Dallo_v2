@@ -868,7 +868,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - 검증 근거:
   - RED: ``tests/test_validator_sandbox_hardening.py`` 의 6 개 신규 테스트 fail (``../outside.py`` 가 외부 파일을 덮어씀, 절대 외부 경로가 외부 파일을 덮어씀, 중첩 traversal 미차단, 경로 거부 시 cleanup 검증, symlink 외부 내용 sandbox 누출, dangling symlink 가 sandbox 셋업 깨뜨림) + 7 passed (정상 상대 경로 / cleanup 성공 케이스 / AST 가드 — 회귀 가드 역할).
   - GREEN targeted: ``tests/test_validator_sandbox_hardening.py`` ``tests/test_validator_command_runner_adapter.py`` ``tests/test_command_env_neutral_boundary.py`` ``tests/test_command_env_sanitizer.py`` → **75 passed in 0.17s**.
-  - GREEN full: ``pytest tests/ -q`` → **674 passed, 5 warnings in 17.32s**. 5 warnings 는 Wave 4-K 와 무관한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로 본 wave 의 blocker 가 아니다 (Wave 4-J 시점 661 → +13 신규 회귀 테스트).
+  - GREEN full: ``pytest tests/ -q`` → **674 passed, 5 warnings in 15.91s**. 5 warnings 는 Wave 4-K 와 무관한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로 본 wave 의 blocker 가 아니다 (Wave 4-J 시점 661 → +13 신규 회귀 테스트).
   - 실 외부 도구 호출 0건 — 신규 테스트는 모두 fake ``_RecordingRunner`` / ``_InspectingRunner`` 로 sandbox pytest 호출을 격리. ``tempfile.mkdtemp`` 만 stdlib 임시 디렉토리를 사용한다.
   - 추가 라인 보안 스캔: ``validator/test_runner.py`` 본문에 ``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``subprocess.run`` 직접 호출 모두 부재 — AST 정적 가드 (``TestTestRunnerSourceStaticGuards``) 와 기존 Wave 4-A 의 ``_calls_with_shell_true`` / ``_direct_subprocess_run_calls`` 가드로 이중 보장.
 - 명시적 비적용 (의도적 비행동):
