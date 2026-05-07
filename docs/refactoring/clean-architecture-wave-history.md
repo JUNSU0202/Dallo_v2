@@ -222,7 +222,7 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-G | `aa92374` | Semgrep child env sanitizer | `analyzer/semgrep_runner.py` | Semgrep caller-specific allowlist |
 | 4-H | `00792a6` | Dependency scanner child env sanitizer | `analyzer/dependency_command_runner.py`, `analyzer/dependency_scanner.py`, `analyzer/command_env.py` | pip-audit/npm caller-specific allowlist + AUTH deny 강화 |
 | 4-I | `2217036` | Validator child env sanitizer | `validator/validator_command_runner.py`, `validator/syntax_checker.py`, `validator/test_runner.py` | flake8/sandbox pytest sanitized env + sandbox pytest caller-specific allowlist |
-| 4-J | `TBD_AFTER_MERGE` | command_env boundary 중립화 | `shared/command_env.py`, `analyzer/command_env.py` (shim), `validator/syntax_checker.py`, `validator/test_runner.py`, `analyzer/{bandit,semgrep,sonar,dependency_scanner}_runner.py` | analyzer→shared 이동 + analyzer 측 호환성 shim, validator 의 analyzer 의존 제거 |
+| 4-J | `4a77782` | command_env boundary 중립화 | `shared/command_env.py`, `analyzer/command_env.py` (shim), `validator/syntax_checker.py`, `validator/test_runner.py`, `analyzer/{bandit,semgrep,sonar,dependency_scanner}_runner.py` | analyzer→shared 이동 + analyzer 측 호환성 shim, validator 의 analyzer 의존 제거 |
 
 ---
 
@@ -797,8 +797,8 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ### Wave 4-J — command_env 경계 중립화 (analyzer → shared)
 
-- 머지 커밋: `TBD_AFTER_MERGE`
-- 구현 커밋: `TBD_AFTER_MERGE`
+- 머지 커밋: `4a77782`
+- 구현 커밋: `cdd1399`
 - 주요 파일/영역:
   - `shared/command_env.py` (신규 — Wave 4-E 구현 이전)
   - `analyzer/command_env.py` (호환성 shim 으로 축소)
@@ -821,13 +821,17 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - ``analyzer.command_env.build_child_env`` 호출은 shim 을 통해 동일 함수 객체로 redirect 되어 caller 호환성을 100% 유지.
 - 검증 근거:
   - RED: ``tests/test_command_env_neutral_boundary.py`` 의 7 개 신규 테스트 모두 fail (``shared.command_env`` 미존재 + validator 소스에 analyzer import 잔존), ``test_command_env_sanitizer.py`` 21 passed.
-  - GREEN targeted: ``tests/test_command_env_neutral_boundary.py`` ``tests/test_command_env_sanitizer.py`` ``tests/test_static_tool_command_runner_adapter.py`` ``tests/test_sonar_runner_adapter.py`` ``tests/test_dependency_scanner_runner_adapter.py`` ``tests/test_validator_command_runner_adapter.py`` → 183 passed in 0.61s.
+  - GREEN targeted: ``tests/test_command_env_neutral_boundary.py`` ``tests/test_command_env_sanitizer.py`` ``tests/test_static_tool_command_runner_adapter.py`` ``tests/test_sonar_runner_adapter.py`` ``tests/test_dependency_scanner_runner_adapter.py`` ``tests/test_validator_command_runner_adapter.py`` → **183 passed in 0.39s**.
+  - GREEN full: 전체 테스트 스위트 **661 passed, 5 warnings in 16.15s**. 5 warnings 는 Wave 4-J 와 무관한 기존 deprecation warning 으로, 본 wave 의 blocker 가 아니다.
+  - Import smoke: ``shared.command_env.build_child_env`` 와 ``analyzer.command_env.build_child_env`` 가 동일 함수 객체로 redirect 됨을 확인 — ``WAVE4J_IMPORT_SMOKE_PASS shared_and_shim_identity_preserved``.
+  - 운영 import 방향 검사: validator 소스에 ``from analyzer.command_env`` import 잔존 0건, ``shared/command_env.py`` 가 ``analyzer`` / ``validator`` 패키지를 import 하지 않음 — shared 레이어/의존 방향 모두 clean.
+  - 추가 라인 보안 스캔: 본 wave 의 추가/변경 라인에 대한 secret-like 및 dangerous pattern 스캔 clean.
+  - AST 운영 코드 dangerous 스캔: production 영역 AST 기반 dangerous pattern 스캔 clean.
   - 실 외부 도구 호출 0건. 본 wave 는 내부 import 경로 + 신규 모듈 파일 추가만 다루며, subprocess/HTTP/파일 어댑터의 동작 면은 건드리지 않는다.
-  - 환경 의존(외부 ``bandit`` 바이너리 미설치) 으로 본래부터 fail 하던 ``tests/test_bandit_runner.py`` 5 케이스는 Wave 4-J 와 무관하며, Wave 4-I head (`d44c9b2`) 에서도 동일 5 케이스가 동일 사유로 fail 함을 재현 확인했다.
 - 명시적 비적용 (Wave 4-K 는 본 wave 에서 구현하지 않는다):
   - sandbox 경로/심볼릭 링크/cleanup 하드닝 (Wave 4-K 후보) 은 의도적으로 다루지 않는다. 본 wave 는 import boundary 정정 한 가지 책임만 옮긴다.
   - 신규 caller-specific allowlist 추가/삭제, deny substring 변경, extras 동작 변경, validator/analyzer 의 어댑터 시그니처 변경, ``shared/schemas.py`` 변경 모두 비적용.
-- Rollback: `git revert -m 1 TBD_AFTER_MERGE` (구현 커밋만 되돌릴 경우 `git revert TBD_AFTER_MERGE`). 되돌려도 호환성 shim 패턴이 사라지는 것뿐, validator 가 다시 analyzer 를 import 하는 4-I 시점 동작으로 복귀한다.
+- Rollback: `git revert -m 1 4a77782` (구현 커밋만 되돌릴 경우 `git revert cdd1399`). 되돌려도 호환성 shim 패턴이 사라지는 것뿐, validator 가 다시 analyzer 를 import 하는 4-I 시점 동작으로 복귀한다.
 - 초보자용 설명: "Wave 4-E 가 만든 자식 env sanitizer 는 analyzer 전용이 아니라 *모두가 쓰는 보안 헬퍼* 다. 그런데 파일이 analyzer 폴더에 있다 보니, validator 가 그 함수를 쓰려고 analyzer 를 import 해야 했다. Wave 4-J 는 그 헬퍼를 ``shared/`` 로 옮기고, 옛 위치는 ‘이 함수는 사실 shared 에 있어요’ 라고 가리키는 빈 껍데기(shim) 만 남겼다. 동작은 한 글자도 바뀌지 않았다."
 
 ---
@@ -875,11 +879,11 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ## 10. 현재 상태 (Wave 4-J 시점)
 
-- 로컬 `main` 에 Wave 4-J 머지 커밋 `TBD_AFTER_MERGE` 가 포함될 예정이다 (구현 커밋 `TBD_AFTER_MERGE`).
-  - Wave 4-I 머지 커밋 `2217036` 위에 Wave 4-J 가 단일 커밋으로 추가된다 (push/PR/deploy 미수행 정책 유지).
+- 로컬 `main` 에 Wave 4-J 머지 커밋 `4a77782` 가 포함되었다 (구현 커밋 `cdd1399`).
+  - Wave 4-I 머지 커밋 `2217036` 위에 Wave 4-J 가 단일 커밋으로 추가되었다 (push/PR/deploy 미수행 정책 유지).
 - 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR/deploy 도 수행되지 않았다.
-- 마지막 검증된 targeted 테스트 결과 (Wave 4-J 시점): `tests/test_command_env_neutral_boundary.py` `tests/test_command_env_sanitizer.py` `tests/test_static_tool_command_runner_adapter.py` `tests/test_sonar_runner_adapter.py` `tests/test_dependency_scanner_runner_adapter.py` `tests/test_validator_command_runner_adapter.py` → **183 passed in 0.61s**.
-  - 환경 의존(외부 ``bandit`` 바이너리 미설치) 으로 ``tests/test_bandit_runner.py`` 의 5 케이스가 fail 하나, Wave 4-I head (`d44c9b2`) 에서도 동일 5 케이스가 동일 사유로 fail 하므로 본 wave 와 무관한 환경 이슈로 식별된다.
+- 마지막 검증된 targeted 테스트 결과 (Wave 4-J 시점): `tests/test_command_env_neutral_boundary.py` `tests/test_command_env_sanitizer.py` `tests/test_static_tool_command_runner_adapter.py` `tests/test_sonar_runner_adapter.py` `tests/test_dependency_scanner_runner_adapter.py` `tests/test_validator_command_runner_adapter.py` → **183 passed in 0.39s**.
+  - 마지막 검증된 full 테스트 결과 (Wave 4-J 시점): **661 passed, 5 warnings in 16.15s**. 5 warnings 는 Wave 4-J 와 무관한 기존 deprecation warning 으로, 본 wave 의 blocker 가 아니다.
 - 보안 스캔(추가 라인 secret-like / dangerous patterns / 운영 영역) 모두 clean. 본 wave 는 동작/정책 변경이 없고 import 경로 + 신규 모듈 파일만 다룬다.
 - 다음 권장 작업 후보:
   - **Wave 4-K (deferred)**: validator sandbox pytest 의 경로/심볼릭 링크/cleanup 하드닝. 현재는 ``XDG_CACHE_HOME`` / ``XDG_CONFIG_HOME`` 등 sandbox 내부 캐시/임시 파일 경로의 traversal/symlink race 를 별도 어댑터에서 검증하지 않는다. Wave 4-J 에서는 의도적으로 다루지 않았다.
