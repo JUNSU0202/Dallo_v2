@@ -42,7 +42,45 @@ class SecurityCheckResult:
 
 
 class SecurityChecker:
-    """LLM 수정안의 보안 재검증기"""
+    """LLM 수정안의 보안 재검증기.
+
+    외부 도구(``bandit`` / ``semgrep``) 호출은 ``analyzer.bandit_runner.BanditRunner``
+    / ``analyzer.semgrep_runner.SemgrepRunner`` 어댑터에 위임한다. 테스트는 생성자에
+    더블을 주입해 실제 subprocess / 외부 스캐너 호출을 막을 수 있다 (Wave 4-L).
+
+    더블을 주입하지 않으면 기본 동작은 보존된다 — 실제 ``BanditRunner()`` /
+    ``SemgrepRunner(config="auto")`` 인스턴스는 ``check()`` 호출 시점에 lazy 하게
+    생성되어 import 시 부수효과를 일으키지 않는다.
+    """
+
+    def __init__(
+        self,
+        *,
+        bandit_runner=None,
+        semgrep_runner=None,
+    ):
+        """
+        Args:
+            bandit_runner: ``BanditRunner`` 인터페이스 더블(테스트 주입용).
+                ``None`` 이면 호출 시점에 ``BanditRunner()`` 를 lazy 생성한다.
+            semgrep_runner: ``SemgrepRunner`` 인터페이스 더블(테스트 주입용).
+                ``None`` 이면 호출 시점에 ``SemgrepRunner(config="auto")`` 를
+                lazy 생성한다.
+        """
+        self._bandit_runner = bandit_runner
+        self._semgrep_runner = semgrep_runner
+
+    def _get_bandit_runner(self):
+        if self._bandit_runner is None:
+            from analyzer.bandit_runner import BanditRunner
+            self._bandit_runner = BanditRunner()
+        return self._bandit_runner
+
+    def _get_semgrep_runner(self):
+        if self._semgrep_runner is None:
+            from analyzer.semgrep_runner import SemgrepRunner
+            self._semgrep_runner = SemgrepRunner(config="auto")
+        return self._semgrep_runner
 
     def check(
         self,
@@ -189,8 +227,7 @@ class SecurityChecker:
     def _run_bandit(self, file_path: str) -> list[dict]:
         """Bandit 스캔 실행"""
         try:
-            from analyzer.bandit_runner import BanditRunner
-            runner = BanditRunner()
+            runner = self._get_bandit_runner()
             result = runner.run(file_path)
             return [
                 {
@@ -211,8 +248,7 @@ class SecurityChecker:
     def _run_semgrep(self, file_path: str) -> list[dict]:
         """Semgrep 스캔 실행"""
         try:
-            from analyzer.semgrep_runner import SemgrepRunner
-            runner = SemgrepRunner(config="auto")
+            runner = self._get_semgrep_runner()
             result = runner.run(file_path)
             return [
                 {
