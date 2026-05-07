@@ -224,7 +224,7 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-I | `2217036` | Validator child env sanitizer | `validator/validator_command_runner.py`, `validator/syntax_checker.py`, `validator/test_runner.py` | flake8/sandbox pytest sanitized env + sandbox pytest caller-specific allowlist |
 | 4-J | `4a77782` | command_env boundary 중립화 | `shared/command_env.py`, `analyzer/command_env.py` (shim), `validator/syntax_checker.py`, `validator/test_runner.py`, `analyzer/{bandit,semgrep,sonar,dependency_scanner}_runner.py` | analyzer→shared 이동 + analyzer 측 호환성 shim, validator 의 analyzer 의존 제거 |
 | 4-K | `515a9d1` | Validator sandbox 경로/심볼릭 링크/cleanup 하드닝 | `validator/test_runner.py`, `tests/test_validator_sandbox_hardening.py` | sandbox 경로 traversal 차단 + symlink 정책 명시 + finally cleanup |
-| 4-L | `<TBD>` | Security checker 스캐너 시 (Bandit/Semgrep DI) | `validator/security_checker.py`, `tests/test_security_checker.py` | ``SecurityChecker`` DI seam + lazy default factory + 23 신규 회귀 테스트 |
+| 4-L | `875c3ac` | Security checker 스캐너 시 (Bandit/Semgrep DI) | `validator/security_checker.py`, `tests/test_security_checker.py` | ``SecurityChecker`` DI seam + lazy default factory + 23 신규 회귀 테스트 |
 
 ---
 
@@ -882,8 +882,8 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ### Wave 4-L — Security checker scanner seam (Bandit/Semgrep DI)
 
-- 머지 커밋: `<TBD-after-Hermes-merge>`
-- 구현 커밋: 본 wave 의 단일 커밋 (브랜치 `w4l-security-checker-seam` 에서 head)
+- 머지 커밋: 875c3ac merge: integrate Wave 4-L security checker seam
+- 구현 커밋: 55b6731 refactor(validator): Wave 4-L add security checker scanner seam (브랜치 `w4l-security-checker-seam` head)
 - 주요 파일/영역:
   - `validator/security_checker.py`
   - `tests/test_security_checker.py` (신규 회귀 테스트)
@@ -924,9 +924,10 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - ``shared/schemas.py`` 변경 없음.
 - 검증 근거:
   - RED: 신규 ``tests/test_security_checker.py`` 의 23 개 테스트 중 16 개가 구현 전에 ``TypeError: SecurityChecker() takes no arguments`` 로 실패, 7 개 (정적 AST 가드 + 기본 생성자 sanity) 만 패스. 즉 기존 코드가 ``bandit_runner`` / ``semgrep_runner`` 키워드 인자를 받지 못하는 사실을 회귀 가드로 고정.
-  - GREEN targeted: ``tests/test_security_checker.py`` → **23 passed in 0.09s**.
-  - GREEN broader targeted: ``tests/test_validator_sandbox_hardening.py`` ``tests/test_validator_command_runner_adapter.py`` ``tests/test_command_env_neutral_boundary.py`` ``tests/test_security_checker.py`` → **77 passed in 0.25s**.
-  - GREEN full: ``pytest tests/ -q`` → **697 passed, 5 warnings in 18.28s** (Wave 4-K 시점 674 → +23 신규 회귀 테스트). 5 warnings 는 Wave 4-J/4-K 와 동일한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로, 본 wave 의 blocker 가 아니다.
+  - GREEN targeted (final main, post-merge): ``tests/test_security_checker.py`` → **23 passed in 0.10s**.
+  - GREEN broader targeted (final main, post-merge): ``tests/test_validator_sandbox_hardening.py`` ``tests/test_validator_command_runner_adapter.py`` ``tests/test_command_env_neutral_boundary.py`` ``tests/test_security_checker.py`` → **77 passed in 0.19s**.
+  - GREEN full (final main, post-merge): ``pytest tests/ -q`` → **697 passed, 5 warnings in 16.52s** (Wave 4-K 시점 674 → +23 신규 회귀 테스트). 5 warnings 는 Wave 4-J/4-K 와 동일한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로, 본 wave 의 blocker 가 아니다. (구현/worktree 시점 동일 스위트 timing: targeted 23 passed in 0.09s, broader 77 passed in 0.25s, full 697 passed in 18.28s — 동일 결과, timing 만 환경 차이.)
+  - Post-merge 검증 (로컬 main, working tree clean): fake smoke `WAVE4L_MAIN_FAKE_SMOKE_PASS injected_runners_used status_verified no_real_scanners` — 주입된 fake ``BanditRunner`` / ``SemgrepRunner`` 만 호출되고 상태 매핑이 검증되었으며 실제 스캐너 인스턴스화는 없음. 운영 보안 스캔: ``MAIN_AST_PRODUCTION_DANGER_SCAN_CLEAN`` (production AST dangerous pattern 0건), production secret assignment scan clean (하드코딩 시크릿 0건), ``MAIN_NO_API_SERVER_COUPLING_IN_CHANGED_FILES`` (변경 파일에서 ``api.server`` 결합 0건), ``MAIN_SHARED_SCHEMAS_UNCHANGED`` (``shared/schemas.py`` diff 0). push / PR / deploy / production DB / 실 외부 Dallo 호출 모두 0건.
   - 실 외부 도구 호출 0건 — 신규 테스트는 ``SimpleNamespace`` fake 와 monkeypatch 트립와이어로 ``BanditRunner`` / ``SemgrepRunner`` 인스턴스 자체를 차단. ``tempfile.mkdtemp`` 만 stdlib 임시 디렉토리를 사용하며 ``check_with_fixed_code=""`` short-circuit 테스트 등은 임시 디렉토리도 만들지 않는다.
   - 추가 라인 보안 스캔: ``validator/security_checker.py`` 본문에 ``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``pickle.loads`` / ``subprocess.run`` 직접 호출 모두 부재 — AST 정적 가드 (``TestSecurityCheckerSourceStaticGuards``) 로 회귀 가드. 새 secret-like 하드코딩 값 / SQL 문자열 보간 / ``api.server`` 의존 도입 0건.
   - ``shared/schemas.py`` / ``shared/command_env.py`` / ``analyzer/bandit_runner.py`` / ``analyzer/semgrep_runner.py`` 변경 없음.
@@ -937,7 +938,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - ``shared/command_env.py`` 정책 변경 비적용 (sanitizer/allowlist/deny filter 모두 그대로).
   - 새 caller-specific allowlist 도입 비적용 — Bandit/Semgrep 자식 env sanitizer 는 Wave 4-F/4-G 가 이미 처리.
   - 한국어 메시지 변경 없음 — ``"보안 재검증 통과"`` / ``"보안 재검증 실패"`` / ``"원본 N건 → 수정 M건 (K건 제거)"`` 그대로.
-- Rollback: `git revert -m 1 <merge_commit_after_Hermes_merge>` (구현 커밋만 되돌릴 경우 `git revert <impl>`). 되돌리면 ``SecurityChecker`` 단위 테스트가 사라지지만 (회귀 가드 약화), 외부 호출 정책 / 상태 매핑 / fail-open 동작은 그대로다. ``SecurityChecker()`` 호출자 (``analyzer/pipeline.py``) 는 두 모드 모두에서 호환된다.
+- Rollback: `git revert -m 1 875c3ac` (구현 커밋만 되돌릴 경우 `git revert 55b6731`). 되돌리면 ``SecurityChecker`` 단위 테스트가 사라지지만 (회귀 가드 약화), 외부 호출 정책 / 상태 매핑 / fail-open 동작은 그대로다. ``SecurityChecker()`` 호출자 (``analyzer/pipeline.py``) 는 두 모드 모두에서 호환된다.
 - 초보자용 설명: "보안 재검증기는 LLM 이 만든 새 코드를 임시 파일로 떨어뜨리고 거기에 ``bandit`` 과 ``semgrep`` 두 개의 정적 분석기를 다시 돌려, 새로 도입된 취약점이 있는지 본다. Wave 4-L 이전에는 이 두 분석기를 만드는 코드가 ``security_checker`` 함수 안에 박혀 있어, 단위 테스트가 ‘진짜 ``bandit`` 을 실행하지 않고 가짜 ``bandit`` 을 끼워넣는’ 자리가 없었다. Wave 4-L 은 ``SecurityChecker(bandit_runner=..., semgrep_runner=...)`` 라는 작은 ‘구멍’ 을 뚫어, 테스트에서는 가짜를, 실제 운영에서는 그대로 진짜를 쓰게 했다. 사용자가 평소처럼 ``SecurityChecker()`` 라고만 부르면 진짜 ``BanditRunner`` 와 ``SemgrepRunner`` 가 호출 시점에만 만들어지므로, 모듈을 import 하는 것만으로 외부 도구가 깨어나는 일은 없다. 이렇게 해서 보안 재검증기의 ‘상태 매핑이 깨지지 않았는지’ 같은 회귀 검사를 외부 도구 없이도 빠르게 돌릴 수 있다."
 
 ---
@@ -985,12 +986,13 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ## 10. 현재 상태 (Wave 4-L 시점)
 
-- 로컬 `main` 에 Wave 4-K 머지 커밋 `515a9d1` 까지 포함되었다 (Wave 4-K 구현 커밋 `7bf8781`).
-  - Wave 4-L 은 브랜치 `w4l-security-checker-seam` 에서 `e7e25e3` (Wave 4-K Hermes 머지 SHA 동기화 docs) 위에 단일 구현 커밋으로 추가되었다 (push/PR/deploy 미수행 정책 유지). Hermes 머지 SHA 는 본 wave 머지 시점에 doc 의 ``<TBD>`` 자리에 채운다.
-- 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR/deploy 도 수행되지 않았다.
-- 마지막 검증된 targeted 테스트 결과 (Wave 4-L 시점): `tests/test_validator_sandbox_hardening.py` `tests/test_validator_command_runner_adapter.py` `tests/test_command_env_neutral_boundary.py` `tests/test_security_checker.py` → **77 passed in 0.25s**.
-  - 마지막 검증된 full 테스트 결과 (Wave 4-L 시점): **697 passed, 5 warnings in 18.28s**. Wave 4-K 시점 674 → +23 신규 ``test_security_checker.py`` 회귀 테스트. 5 warnings 는 Wave 4-J/4-K 와 동일한 기존 deprecation warning 으로, 본 wave 의 blocker 가 아니다.
-- 보안 스캔(추가 라인 secret-like / dangerous patterns / 운영 영역) 모두 clean. 본 wave 는 외부 동작/정책 변경이 없고 ``SecurityChecker`` 생성자에 키워드 시 주입 자리만 추가했다. ``shared/schemas.py`` / ``shared/command_env.py`` / ``analyzer/bandit_runner.py`` / ``analyzer/semgrep_runner.py`` 변경 없음.
+- 로컬 `main` 에 Wave 4-L 머지 커밋 `875c3ac` 까지 포함되었다 (Wave 4-L 구현 커밋 `55b6731`, 그 직전 Wave 4-K 머지 커밋 `515a9d1` / Wave 4-K 구현 커밋 `7bf8781`).
+  - Wave 4-L 은 브랜치 `w4l-security-checker-seam` 에서 `e7e25e3` (Wave 4-K Hermes 머지 SHA 동기화 docs) 위에 단일 구현 커밋 `55b6731` 으로 추가된 뒤, 머지 커밋 `875c3ac` 으로 로컬 `main` 에 통합되었다. push / PR / deploy 는 수행되지 않았다 (정책 유지).
+- 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출도 수행되지 않았다.
+- 마지막 검증된 targeted 테스트 결과 (final main, post-merge): `tests/test_validator_sandbox_hardening.py` `tests/test_validator_command_runner_adapter.py` `tests/test_command_env_neutral_boundary.py` `tests/test_security_checker.py` → **77 passed in 0.19s**. 그 중 ``tests/test_security_checker.py`` 단독은 **23 passed in 0.10s**.
+  - 마지막 검증된 full 테스트 결과 (final main, post-merge): **697 passed, 5 warnings in 16.52s**. Wave 4-K 시점 674 → +23 신규 ``test_security_checker.py`` 회귀 테스트. 5 warnings 는 Wave 4-J/4-K 와 동일한 기존 deprecation warning 으로, 본 wave 의 blocker 가 아니다.
+- Post-merge fake smoke: ``WAVE4L_MAIN_FAKE_SMOKE_PASS injected_runners_used status_verified no_real_scanners`` — 주입된 fake ``BanditRunner`` / ``SemgrepRunner`` 만 호출되고 상태 매핑이 검증되었으며 실제 스캐너 인스턴스화는 없음.
+- 운영 보안 스캔: ``MAIN_AST_PRODUCTION_DANGER_SCAN_CLEAN`` (production AST dangerous pattern 0건), production secret assignment scan clean (하드코딩 시크릿 0건), ``MAIN_NO_API_SERVER_COUPLING_IN_CHANGED_FILES`` (변경 파일에서 ``api.server`` 결합 0건), ``MAIN_SHARED_SCHEMAS_UNCHANGED`` (``shared/schemas.py`` diff 0). 본 wave 는 외부 동작 / 정책 변경이 없고 ``SecurityChecker`` 생성자에 키워드 시 주입 자리만 추가했다. ``shared/schemas.py`` / ``shared/command_env.py`` / ``analyzer/bandit_runner.py`` / ``analyzer/semgrep_runner.py`` 변경 없음.
 - 다음 권장 작업 후보:
   - 사설 PyPI/npm 레지스트리 capability grant wave (필요해질 때): pip 의 `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL` 와 npm 의 `NPM_CONFIG_REGISTRY` + `_authToken` 을 명시적 `DependencyScanner` 생성자 인자 + `build_child_env(extras=...)` 패턴으로 도입.
   - Sandbox pytest 격리 강화: 별도 user 또는 chroot 등 OS 수준 격리 검토 (현재는 환경 변수 통제만 강화).
