@@ -836,7 +836,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ### Wave 4-K — Validator sandbox 경로/심볼릭 링크/cleanup 하드닝
 
-- 머지 커밋: TBD (Hermes 머지 시 채움)
+- 머지 커밋: 515a9d1 merge: integrate Wave 4-K validator sandbox hardening
 - 구현 커밋: 7bf8781 refactor(validator): Wave 4-K harden sandbox paths
 - 주요 파일/영역:
   - `validator/test_runner.py`
