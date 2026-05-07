@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-K 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-L 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -33,7 +33,7 @@ Dallo 의 리팩터링은 **세 단계의 큰 흐름** 으로 진행되었다.
 | --- | --- | --- | --- |
 | **Wave 2 (A~S, 19 wave)** | API/라우터/서비스/부트스트랩/경로 안정화 | 단일 파일에 뭉친 책임을 라우터·서비스 계층으로 분리, 부트스트랩 부수효과 정리, 경로 안전성 강화 | `api/server.py` 거대 파일을 라우터/서비스 단위로 분해 |
 | **Wave 3 (A~J, 11 wave)** | analyzer/외부 의존 경계 추출 | subprocess·HTTP·시간 의존성을 어댑터(seam)로 분리, fakeable 테스트 가능한 구조로 전환 | `pip-audit`, Bandit, Semgrep, Sonar scanner, Sonar HTTP, polling clock 까지 모두 외부 경계 격리 |
-| **Wave 4 (A~J, 10 wave)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared) | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 |
+| **Wave 4 (A~L, 12 wave)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 |
 
 핵심 원칙은 다음 네 가지다.
 
@@ -223,6 +223,8 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-H | `00792a6` | Dependency scanner child env sanitizer | `analyzer/dependency_command_runner.py`, `analyzer/dependency_scanner.py`, `analyzer/command_env.py` | pip-audit/npm caller-specific allowlist + AUTH deny 강화 |
 | 4-I | `2217036` | Validator child env sanitizer | `validator/validator_command_runner.py`, `validator/syntax_checker.py`, `validator/test_runner.py` | flake8/sandbox pytest sanitized env + sandbox pytest caller-specific allowlist |
 | 4-J | `4a77782` | command_env boundary 중립화 | `shared/command_env.py`, `analyzer/command_env.py` (shim), `validator/syntax_checker.py`, `validator/test_runner.py`, `analyzer/{bandit,semgrep,sonar,dependency_scanner}_runner.py` | analyzer→shared 이동 + analyzer 측 호환성 shim, validator 의 analyzer 의존 제거 |
+| 4-K | `515a9d1` | Validator sandbox 경로/심볼릭 링크/cleanup 하드닝 | `validator/test_runner.py`, `tests/test_validator_sandbox_hardening.py` | sandbox 경로 traversal 차단 + symlink 정책 명시 + finally cleanup |
+| 4-L | `<TBD>` | Security checker 스캐너 시 (Bandit/Semgrep DI) | `validator/security_checker.py`, `tests/test_security_checker.py` | ``SecurityChecker`` DI seam + lazy default factory + 23 신규 회귀 테스트 |
 
 ---
 
@@ -878,11 +880,71 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - Rollback: `git revert -m 1 <merge>` (구현 커밋만 되돌릴 경우 `git revert <impl>`). 되돌리면 traversal/symlink 노출 위험이 다시 열리지만, 도메인 시그니처는 변하지 않는다.
 - 초보자용 설명: "검증기는 LLM 이 만든 새 코드를 임시 폴더(sandbox)에 떨어뜨리고 그 안에서 pytest 를 돌린다. 그런데 ‘이 파일을 수정해 주세요’ 라고 호출자가 넘기는 경로가 ``../bashrc`` 처럼 폴더 바깥을 가리키면, 그 외부 파일을 LLM 이 만든 코드로 덮어쓸 수 있었다. 또 프로젝트 안에 ‘저쪽 비밀 파일’ 을 가리키는 symlink 가 있으면 sandbox 복사 과정이 그 비밀 파일을 통째로 sandbox 안으로 복사해, LLM 코드가 그 내용을 읽을 수 있었다. Wave 4-K 는 (1) 경로가 sandbox 안쪽인지 ``realpath`` 비교로 확인하고 아니면 거부, (2) 복사할 때 symlink 항목은 아예 무시, (3) 깨진 symlink 가 있어도 sandbox 셋업이 멈추지 않게 했다. 끝나면 sandbox 폴더는 성공/실패/거부 어느 쪽이든 항상 지운다."
 
+### Wave 4-L — Security checker scanner seam (Bandit/Semgrep DI)
+
+- 머지 커밋: `<TBD-after-Hermes-merge>`
+- 구현 커밋: 본 wave 의 단일 커밋 (브랜치 `w4l-security-checker-seam` 에서 head)
+- 주요 파일/영역:
+  - `validator/security_checker.py`
+  - `tests/test_security_checker.py` (신규 회귀 테스트)
+- 이전 구조: Wave 3-G 에서 ``BanditRunner`` / ``SemgrepRunner`` 는 ``StaticToolCommandRunner`` 어댑터를 받는 fakeable 생성자로 정리되었지만, ``validator/security_checker.py`` 의 ``SecurityChecker`` 자체는 외부 도구 실행 측에 대한 시(seam)이 없었다. ``_run_bandit`` 과 ``_run_semgrep`` 은 매 호출마다 함수 본문에서 ``from analyzer.bandit_runner import BanditRunner`` / ``from analyzer.semgrep_runner import SemgrepRunner`` 를 실행하고 ``BanditRunner()`` / ``SemgrepRunner(config="auto")`` 를 직접 생성했다. 결과적으로 ``SecurityChecker`` 단위 테스트는 fake 를 주입할 자리가 없어 작성되지 못했다 (이번 wave 까지 ``tests/test_security_checker.py`` 가 부재).
+- 문제/위험:
+  - **테스트 가능성 결여**: ``SecurityChecker`` 의 상태 매핑(``passed → VERIFIED``, 새 취약점 → ``FAILED``), ``removed_count`` / ``introduced_count`` 산정, 빈/누락 ``fixed_code`` short-circuit, fail-open 분기 (``tool_used="error"``) 동작이 단위 테스트 회귀 가드 없이 운영되었다.
+  - **암묵적 외부 호출 위험**: 어떤 호출자가 ``SecurityChecker().check(...)`` 를 직접 호출하면 fake 를 주입할 자리가 없으므로 실제 ``bandit`` / ``semgrep`` subprocess 가 실행될 수 있었다. 일반 단위 테스트 환경에서 외부 도구 호출은 비결정성/네트워크/런타임 의존을 끌어들인다.
+  - **클린 아키텍처 위반**: validator 도메인 클래스가 외부 명령 어댑터의 *생성* 까지 직접 책임지고 있었다. analyzer 측 어댑터 (``BanditRunner`` / ``SemgrepRunner``) 는 이미 fakeable 한데, 그 위 레이어인 validator 의 ``SecurityChecker`` 만 DI seam 이 없는 비대칭 상태였다.
+- 변경:
+  - ``SecurityChecker.__init__(self, *, bandit_runner=None, semgrep_runner=None)`` 키워드-온리 의존성 주입 시 도입. 두 인자 모두 기본값 ``None`` — 기존 ``SecurityChecker()`` 호출 형태는 그대로 유지.
+  - ``_get_bandit_runner()`` / ``_get_semgrep_runner()`` 헬퍼를 도입해 *호출 시점* 에 lazy 하게 ``BanditRunner()`` / ``SemgrepRunner(config="auto")`` 를 생성. 모듈 import 시 부수효과는 없으며, ``SecurityChecker()`` 인스턴스화 자체도 외부 도구를 침범하지 않는다.
+  - ``_run_bandit`` / ``_run_semgrep`` 은 더 이상 함수 안에서 ``BanditRunner`` / ``SemgrepRunner`` 를 직접 생성하지 않고 ``self._get_*_runner()`` 가 돌려준 인스턴스의 ``run(file_path)`` 만 호출한다.
+  - 기존 try/except 분기는 그대로 — runner 가 예외를 던지면 빈 리스트를 돌려주는 inner fail-open 동작 유지. 외부 ``_run_security_scan`` try/except 의 ``passed=True`` + ``tool_used="error"`` 분기도 그대로.
+  - 신규 ``tests/test_security_checker.py`` 추가:
+    - ``SimpleNamespace`` 기반 fake ``BanditRunner`` / ``SemgrepRunner`` 더블 (``run(file_path) → SimpleNamespace(vulnerabilities=[...])`` 표면).
+    - 정적 가드: 본문에 ``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``pickle.loads`` / ``subprocess.run`` 직접 호출 금지 회귀 가드.
+    - DI seam: 키워드 인자 수용, 기본 생성자 lazy, 주입된 fake 만 호출되며 실제 ``BanditRunner`` / ``SemgrepRunner`` 인스턴스화가 일어나지 않음 (트립와이어 monkeypatch).
+    - 상태 매핑 / fixed_ vs original_ 경로 분기 / Python (bandit+semgrep) vs 비-Python (semgrep only) ``tool_used`` 매핑 보존.
+    - ``removed_count`` / ``introduced_count`` (rule_id, title) 셋 차집합 기반 산정 보존.
+    - 빈/공백-only ``fixed_code`` 와 ``status=FAILED`` short-circuit (스캔 미실행) 보존.
+    - inner runner 예외(``BanditRunner.run`` 이 ``RuntimeError``) → 빈 리스트로 흡수, ``tool_used="bandit+semgrep"`` 유지. outer ``_scan_file`` 예외 → ``passed=True`` + ``tool_used="error"`` fail-open 유지.
+    - 기존 호출자 (``analyzer/pipeline.py`` 의 ``sec_checker.check(p, language=lang, filename=filename, original_code=orig)``) 시그니처와 ``check_batch`` 반복 동작 보존 회귀 가드.
+- 클린 아키텍처 적합성: validator 도메인 (``SecurityChecker``) 이 더 이상 analyzer 측 어댑터를 *직접 생성* 하지 않는다. 의존성 주입을 통해 “어떤 외부 스캐너 어댑터를 쓸지” 의 결정을 외부에서 주입받을 수 있다. 기본 동작은 lazy 한 default factory 로 보존. 결과적으로 Bandit/Semgrep/Sonar/StaticTool/Dependency/Validator command/Sonar HTTP 어댑터에 이어 *그 위 레이어* 인 ``SecurityChecker`` 까지 같은 fakeable seam 패턴이 통일된다.
+- 보존된 동작:
+  - ``SecurityChecker()`` 기본 생성자 — 기존 호출자(``analyzer/pipeline.py``)는 변경 없이 동작.
+  - ``check(patch, language=.., filename=.., original_code=..)`` 시그니처 / 키워드 인자 / 반환 타입 (``PatchSuggestion``).
+  - ``check_batch(patches, ...)`` 반복 동작.
+  - 빈 / 공백-only ``fixed_code`` → 그대로 ``patch`` 반환 (``security_revalidation`` 미설정).
+  - ``patch.status == FAILED`` → 그대로 ``patch`` 반환.
+  - 상태 매핑: 새 취약점 0 → ``VERIFIED`` + ``"보안 재검증 통과"`` 한국어 메시지, 새 취약점 ≥ 1 → ``FAILED`` + ``"보안 재검증 실패"`` + 상위 3개 ``rule_id(severity)`` 요약.
+  - ``removed_count = max(0, len(original_vulns) - len(fixed_vulns))``.
+  - ``introduced_count = len(fixed_vulns whose (rule_id, title) ∉ original_vulns rule set)``.
+  - ``tool_used`` 매핑: ``.py`` → ``"bandit+semgrep"`` / 그 외 → ``"semgrep"`` / outer 예외 → ``"error"``.
+  - inner ``_run_bandit`` / ``_run_semgrep`` 의 ``except Exception`` → 빈 리스트 fail-open.
+  - outer ``_run_security_scan`` 의 ``except Exception`` → ``passed=True``, ``tool_used="error"``, ``error=str(e)`` fail-open.
+  - 임시 디렉토리 ``tempfile.mkdtemp(prefix="dallo_revalidate_")`` 와 ``finally`` 의 ``shutil.rmtree(..., ignore_errors=True)`` 동작 그대로.
+  - ``SecurityCheckResult`` dataclass shape 와 ``to_dict()`` 직렬화 그대로.
+  - ``shared/schemas.py`` 변경 없음.
+- 검증 근거:
+  - RED: 신규 ``tests/test_security_checker.py`` 의 23 개 테스트 중 16 개가 구현 전에 ``TypeError: SecurityChecker() takes no arguments`` 로 실패, 7 개 (정적 AST 가드 + 기본 생성자 sanity) 만 패스. 즉 기존 코드가 ``bandit_runner`` / ``semgrep_runner`` 키워드 인자를 받지 못하는 사실을 회귀 가드로 고정.
+  - GREEN targeted: ``tests/test_security_checker.py`` → **23 passed in 0.09s**.
+  - GREEN broader targeted: ``tests/test_validator_sandbox_hardening.py`` ``tests/test_validator_command_runner_adapter.py`` ``tests/test_command_env_neutral_boundary.py`` ``tests/test_security_checker.py`` → **77 passed in 0.25s**.
+  - GREEN full: ``pytest tests/ -q`` → **697 passed, 5 warnings in 18.28s** (Wave 4-K 시점 674 → +23 신규 회귀 테스트). 5 warnings 는 Wave 4-J/4-K 와 동일한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로, 본 wave 의 blocker 가 아니다.
+  - 실 외부 도구 호출 0건 — 신규 테스트는 ``SimpleNamespace`` fake 와 monkeypatch 트립와이어로 ``BanditRunner`` / ``SemgrepRunner`` 인스턴스 자체를 차단. ``tempfile.mkdtemp`` 만 stdlib 임시 디렉토리를 사용하며 ``check_with_fixed_code=""`` short-circuit 테스트 등은 임시 디렉토리도 만들지 않는다.
+  - 추가 라인 보안 스캔: ``validator/security_checker.py`` 본문에 ``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``pickle.loads`` / ``subprocess.run`` 직접 호출 모두 부재 — AST 정적 가드 (``TestSecurityCheckerSourceStaticGuards``) 로 회귀 가드. 새 secret-like 하드코딩 값 / SQL 문자열 보간 / ``api.server`` 의존 도입 0건.
+  - ``shared/schemas.py`` / ``shared/command_env.py`` / ``analyzer/bandit_runner.py`` / ``analyzer/semgrep_runner.py`` 변경 없음.
+- 명시적 비적용 (의도적 비행동):
+  - fail-open → fail-closed 정책 변경 비적용. inner runner 예외와 outer scan 예외 모두 기존 fail-open 동작을 그대로 유지한다 (정책 변화는 별도 wave 로 분리).
+  - validator sandbox 경로 traversal 하드닝 추가 비적용 (Wave 4-K 범위).
+  - ``BanditRunner`` / ``SemgrepRunner`` 의 result model (``AnalysisResult`` / ``Vulnerability`` 스키마) 변경 비적용.
+  - ``shared/command_env.py`` 정책 변경 비적용 (sanitizer/allowlist/deny filter 모두 그대로).
+  - 새 caller-specific allowlist 도입 비적용 — Bandit/Semgrep 자식 env sanitizer 는 Wave 4-F/4-G 가 이미 처리.
+  - 한국어 메시지 변경 없음 — ``"보안 재검증 통과"`` / ``"보안 재검증 실패"`` / ``"원본 N건 → 수정 M건 (K건 제거)"`` 그대로.
+- Rollback: `git revert -m 1 <merge_commit_after_Hermes_merge>` (구현 커밋만 되돌릴 경우 `git revert <impl>`). 되돌리면 ``SecurityChecker`` 단위 테스트가 사라지지만 (회귀 가드 약화), 외부 호출 정책 / 상태 매핑 / fail-open 동작은 그대로다. ``SecurityChecker()`` 호출자 (``analyzer/pipeline.py``) 는 두 모드 모두에서 호환된다.
+- 초보자용 설명: "보안 재검증기는 LLM 이 만든 새 코드를 임시 파일로 떨어뜨리고 거기에 ``bandit`` 과 ``semgrep`` 두 개의 정적 분석기를 다시 돌려, 새로 도입된 취약점이 있는지 본다. Wave 4-L 이전에는 이 두 분석기를 만드는 코드가 ``security_checker`` 함수 안에 박혀 있어, 단위 테스트가 ‘진짜 ``bandit`` 을 실행하지 않고 가짜 ``bandit`` 을 끼워넣는’ 자리가 없었다. Wave 4-L 은 ``SecurityChecker(bandit_runner=..., semgrep_runner=...)`` 라는 작은 ‘구멍’ 을 뚫어, 테스트에서는 가짜를, 실제 운영에서는 그대로 진짜를 쓰게 했다. 사용자가 평소처럼 ``SecurityChecker()`` 라고만 부르면 진짜 ``BanditRunner`` 와 ``SemgrepRunner`` 가 호출 시점에만 만들어지므로, 모듈을 import 하는 것만으로 외부 도구가 깨어나는 일은 없다. 이렇게 해서 보안 재검증기의 ‘상태 매핑이 깨지지 않았는지’ 같은 회귀 검사를 외부 도구 없이도 빠르게 돌릴 수 있다."
+
 ---
 
 ## 9. 보안 강화 관점 요약
 
-이 절은 Wave 2-S → Wave 4-J 를 보안 관점으로 다시 본다.
+이 절은 Wave 2-S → Wave 4-L 을 보안 관점으로 다시 본다.
 
 ### 9.1 무엇이 줄어들었나
 
@@ -921,16 +983,15 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-## 10. 현재 상태 (Wave 4-J 시점)
+## 10. 현재 상태 (Wave 4-L 시점)
 
-- 로컬 `main` 에 Wave 4-J 머지 커밋 `4a77782` 가 포함되었다 (구현 커밋 `cdd1399`).
-  - Wave 4-I 머지 커밋 `2217036` 위에 Wave 4-J 가 단일 커밋으로 추가되었다 (push/PR/deploy 미수행 정책 유지).
+- 로컬 `main` 에 Wave 4-K 머지 커밋 `515a9d1` 까지 포함되었다 (Wave 4-K 구현 커밋 `7bf8781`).
+  - Wave 4-L 은 브랜치 `w4l-security-checker-seam` 에서 `e7e25e3` (Wave 4-K Hermes 머지 SHA 동기화 docs) 위에 단일 구현 커밋으로 추가되었다 (push/PR/deploy 미수행 정책 유지). Hermes 머지 SHA 는 본 wave 머지 시점에 doc 의 ``<TBD>`` 자리에 채운다.
 - 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR/deploy 도 수행되지 않았다.
-- 마지막 검증된 targeted 테스트 결과 (Wave 4-J 시점): `tests/test_command_env_neutral_boundary.py` `tests/test_command_env_sanitizer.py` `tests/test_static_tool_command_runner_adapter.py` `tests/test_sonar_runner_adapter.py` `tests/test_dependency_scanner_runner_adapter.py` `tests/test_validator_command_runner_adapter.py` → **183 passed in 0.39s**.
-  - 마지막 검증된 full 테스트 결과 (Wave 4-J 시점): **661 passed, 5 warnings in 16.15s**. 5 warnings 는 Wave 4-J 와 무관한 기존 deprecation warning 으로, 본 wave 의 blocker 가 아니다.
-- 보안 스캔(추가 라인 secret-like / dangerous patterns / 운영 영역) 모두 clean. 본 wave 는 동작/정책 변경이 없고 import 경로 + 신규 모듈 파일만 다룬다.
+- 마지막 검증된 targeted 테스트 결과 (Wave 4-L 시점): `tests/test_validator_sandbox_hardening.py` `tests/test_validator_command_runner_adapter.py` `tests/test_command_env_neutral_boundary.py` `tests/test_security_checker.py` → **77 passed in 0.25s**.
+  - 마지막 검증된 full 테스트 결과 (Wave 4-L 시점): **697 passed, 5 warnings in 18.28s**. Wave 4-K 시점 674 → +23 신규 ``test_security_checker.py`` 회귀 테스트. 5 warnings 는 Wave 4-J/4-K 와 동일한 기존 deprecation warning 으로, 본 wave 의 blocker 가 아니다.
+- 보안 스캔(추가 라인 secret-like / dangerous patterns / 운영 영역) 모두 clean. 본 wave 는 외부 동작/정책 변경이 없고 ``SecurityChecker`` 생성자에 키워드 시 주입 자리만 추가했다. ``shared/schemas.py`` / ``shared/command_env.py`` / ``analyzer/bandit_runner.py`` / ``analyzer/semgrep_runner.py`` 변경 없음.
 - 다음 권장 작업 후보:
-  - **Wave 4-K (deferred)**: validator sandbox pytest 의 경로/심볼릭 링크/cleanup 하드닝. 현재는 ``XDG_CACHE_HOME`` / ``XDG_CONFIG_HOME`` 등 sandbox 내부 캐시/임시 파일 경로의 traversal/symlink race 를 별도 어댑터에서 검증하지 않는다. Wave 4-J 에서는 의도적으로 다루지 않았다.
   - 사설 PyPI/npm 레지스트리 capability grant wave (필요해질 때): pip 의 `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL` 와 npm 의 `NPM_CONFIG_REGISTRY` + `_authToken` 을 명시적 `DependencyScanner` 생성자 인자 + `build_child_env(extras=...)` 패턴으로 도입.
   - Sandbox pytest 격리 강화: 별도 user 또는 chroot 등 OS 수준 격리 검토 (현재는 환경 변수 통제만 강화).
 
