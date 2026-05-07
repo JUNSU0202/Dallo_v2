@@ -19,7 +19,7 @@ import re
 import sys
 import time
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -37,6 +37,12 @@ class DalloAgent:
 
     Provider 인터페이스를 통해 LLM을 호출합니다.
     프롬프트 구성, 응답 파싱, 민감정보 마스킹, 재시도 로직을 담당합니다.
+
+    재시도 sleep 경계는 생성자 주입형 ``sleeper`` seam 으로 분리되어 있다
+    (Wave 4-M). 기본값은 ``time.sleep`` 이며, 테스트에서는 가짜 sleeper 를
+    주입하여 실제 wall-clock 대기 없이 rate-limit 재시도 경로를 검증할 수
+    있다. ``sleeper`` 는 keyword-only/optional 이라 기존 호출자의 시그니처
+    호환은 유지된다.
     """
 
     def __init__(
@@ -47,6 +53,8 @@ class DalloAgent:
         provider: str = None,
         max_retries: int = 2,
         temperature: float = 0.2,
+        *,
+        sleeper: Optional[Callable[[float], None]] = None,
     ):
         self.max_retries = max_retries
         self._masker = DataMasker()
@@ -62,6 +70,8 @@ class DalloAgent:
         self.provider = (provider or "gemini").lower()
         self.model = self._provider.model
         self.temperature = self._provider.temperature
+        # Wave 4-M: retry sleep 경계 — 기본은 time.sleep, 테스트는 fake 주입.
+        self._sleeper: Callable[[float], None] = sleeper or time.sleep
 
     def generate_patch(self, vuln: VulnerabilityReport) -> PatchSuggestion:
         """
@@ -124,7 +134,7 @@ class DalloAgent:
                     else:
                         wait = self._extract_retry_delay(err_str)
                         logger.info(f"  Rate limit 감지 — {wait}초 대기 중...")
-                        time.sleep(wait)
+                        self._sleeper(wait)
 
                 if attempt == self.max_retries:
                     return PatchSuggestion(
@@ -174,7 +184,7 @@ class DalloAgent:
                     else:
                         wait = self._extract_retry_delay(err_str)
                         logger.info(f"  Rate limit 감지 — {wait}초 대기 중...")
-                        time.sleep(wait)
+                        self._sleeper(wait)
 
                 if attempt == self.max_retries:
                     # 다중 실패 시 단일 수정안으로 폴백
