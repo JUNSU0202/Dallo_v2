@@ -17,7 +17,7 @@ import shutil
 import tempfile
 import subprocess
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -48,6 +48,54 @@ _VALIDATOR_PYTEST_ENV_ALLOWLIST: tuple[str, ...] = (
     "COVERAGE_RCFILE",
     "COVERAGE_PROCESS_START",
 )
+
+
+# Wave 4-K: sandbox 복사 시 무시할 경로 패턴.
+# 기존 ``shutil.ignore_patterns(...)`` 동작을 보존하면서 symlink 항목을
+# 추가로 차단해, 외부 경로를 가리키는 link 의 내용이 sandbox 안에 일반
+# 파일로 복사되지 않도록 한다.
+_SANDBOX_IGNORE_PATTERNS: tuple[str, ...] = ("__pycache__", "*.pyc", ".git")
+
+
+def _make_sandbox_copy_ignore() -> Callable[[str, list[str]], list[str]]:
+    """``shutil.copytree(ignore=...)`` 용 콜러블을 만든다.
+
+    기존 패턴 (``__pycache__``, ``*.pyc``, ``.git``) 에 더해, 디렉토리 안의
+    심볼릭 링크 항목을 모두 무시 목록에 추가한다. ``shutil.copytree`` 의
+    ``symlinks=False`` 는 link 를 *따라가* 대상 내용을 일반 파일로 복사하는
+    기본 동작이므로 그 인자 자체로는 link 가 차단되지 않는다. 이 콜러블이
+    link 항목을 ignore 목록에 미리 넣어, copytree 가 link 를 따라가기 전에
+    sandbox 외부 대상이 일반 파일로 복사되지 않도록 사전 차단한다.
+    """
+
+    base_ignore = shutil.ignore_patterns(*_SANDBOX_IGNORE_PATTERNS)
+
+    def _ignore(directory: str, names: list[str]) -> list[str]:
+        ignored = set(base_ignore(directory, names))
+        for name in names:
+            full = os.path.join(directory, name)
+            if os.path.islink(full):
+                ignored.add(name)
+        return list(ignored)
+
+    return _ignore
+
+
+def _is_safe_sandbox_relative_path(base: str, candidate: str) -> bool:
+    """``candidate`` 가 ``base`` 디렉토리 안쪽(자기 자신 제외)을 가리키는지 검사.
+
+    절대 경로, 상위 디렉토리 traversal 등 sandbox 바깥을 가리키는 경로는
+    거부한다 (``False`` 반환). ``base`` / ``candidate`` 모두 realpath 로
+    정규화해 비교하므로 ``safe/../../outside`` 같은 중첩 traversal 도 차단된다.
+    """
+
+    if not candidate or os.path.isabs(candidate):
+        return False
+    base_real = os.path.realpath(base)
+    target_real = os.path.realpath(os.path.join(base, candidate))
+    if target_real == base_real:
+        return False
+    return target_real.startswith(base_real + os.sep)
 
 
 @dataclass
@@ -134,16 +182,40 @@ class TestRunner:
         tmp_dir = tempfile.mkdtemp(prefix="dallo_test_")
 
         try:
-            # 프로젝트 복사 (venv, .git 제외)
+            # Wave 4-K: 복사 시작 전에 ``original_file_path`` 가 sandbox 바깥을
+            # 가리키는지 먼저 검증한다. 절대 경로 / 상위 traversal 이 들어오면
+            # 외부 파일을 절대 덮어쓰지 않도록 차단한다.
+            if not _is_safe_sandbox_relative_path(tmp_dir, original_file_path):
+                raise ValueError(
+                    "안전하지 않은 original_file_path (sandbox 바깥 경로)"
+                )
+
+            # 프로젝트 복사 (venv, .git 제외).
+            # Wave 4-K: 외부를 가리키는 symlink 가 일반 파일로 sandbox 에
+            # 복사되지 않도록 한다. ``symlinks=False`` 자체는 link 를 *따라가*
+            # 대상 내용을 일반 파일로 복사하므로 그것만으로는 차단되지 않는다.
+            # Wave 4-K 는 ``_make_sandbox_copy_ignore()`` 로 디렉토리 내부의
+            # link 항목을 ignore 목록에 넣고, 최상위 항목은 아래
+            # ``os.path.islink(src)`` 검사로 사전 스킵해 copytree/copy2 가
+            # link 를 따라가기 전에 차단한다. ``ignore_dangling_symlinks=True``
+            # 는 깨진 link 가 남아 있어도 copytree 가 예외로 깨지지 않게 한다.
+            ignore = _make_sandbox_copy_ignore()
             for item in os.listdir(self.project_root):
                 if item in ("venv", ".git", ".scannerwork", "__pycache__", "node_modules"):
                     continue
                 src = os.path.join(self.project_root, item)
+                # 최상위 항목이 symlink 면 sandbox 로 복사하지 않는다.
+                if os.path.islink(src):
+                    continue
                 dst = os.path.join(tmp_dir, item)
                 if os.path.isdir(src):
-                    shutil.copytree(src, dst, ignore=shutil.ignore_patterns(
-                        "__pycache__", "*.pyc", ".git"
-                    ))
+                    shutil.copytree(
+                        src,
+                        dst,
+                        symlinks=False,
+                        ignore_dangling_symlinks=True,
+                        ignore=ignore,
+                    )
                 else:
                     shutil.copy2(src, dst)
 
