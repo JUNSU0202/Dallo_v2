@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from analyzer.bandit_runner import Vulnerability, AnalysisResult
-from analyzer.command_env import build_child_env
+from shared.command_env import build_child_env
 from analyzer.static_tool_command_runner import StaticToolCommandRunner
 
 

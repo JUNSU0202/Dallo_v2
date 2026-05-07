@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-I 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-J 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -33,7 +33,7 @@ Dallo 의 리팩터링은 **세 단계의 큰 흐름** 으로 진행되었다.
 | --- | --- | --- | --- |
 | **Wave 2 (A~S, 19 wave)** | API/라우터/서비스/부트스트랩/경로 안정화 | 단일 파일에 뭉친 책임을 라우터·서비스 계층으로 분리, 부트스트랩 부수효과 정리, 경로 안전성 강화 | `api/server.py` 거대 파일을 라우터/서비스 단위로 분해 |
 | **Wave 3 (A~J, 11 wave)** | analyzer/외부 의존 경계 추출 | subprocess·HTTP·시간 의존성을 어댑터(seam)로 분리, fakeable 테스트 가능한 구조로 전환 | `pip-audit`, Bandit, Semgrep, Sonar scanner, Sonar HTTP, polling clock 까지 모두 외부 경계 격리 |
-| **Wave 4 (A~I, 9 wave)** | validator·통합·토큰·환경 변수 보안 강화 | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 |
+| **Wave 4 (A~J, 10 wave)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared) | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 |
 
 핵심 원칙은 다음 네 가지다.
 
@@ -222,6 +222,7 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-G | `aa92374` | Semgrep child env sanitizer | `analyzer/semgrep_runner.py` | Semgrep caller-specific allowlist |
 | 4-H | `00792a6` | Dependency scanner child env sanitizer | `analyzer/dependency_command_runner.py`, `analyzer/dependency_scanner.py`, `analyzer/command_env.py` | pip-audit/npm caller-specific allowlist + AUTH deny 강화 |
 | 4-I | `2217036` | Validator child env sanitizer | `validator/validator_command_runner.py`, `validator/syntax_checker.py`, `validator/test_runner.py` | flake8/sandbox pytest sanitized env + sandbox pytest caller-specific allowlist |
+| 4-J | `TBD_AFTER_MERGE` | command_env boundary 중립화 | `shared/command_env.py`, `analyzer/command_env.py` (shim), `validator/syntax_checker.py`, `validator/test_runner.py`, `analyzer/{bandit,semgrep,sonar,dependency_scanner}_runner.py` | analyzer→shared 이동 + analyzer 측 호환성 shim, validator 의 analyzer 의존 제거 |
 
 ---
 
@@ -794,17 +795,52 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - Rollback: `git revert -m 1 2217036` (구현 커밋만으로 되돌릴 경우 `git revert 7fe88d8`).
 - 초보자용 설명: "flake8 는 코드 스타일을 보는 도구라 시크릿이 안 새겠지만, sandbox pytest 는 LLM 이 만든 새 코드를 실행한다. 부모 셸의 ``ANTHROPIC_API_KEY`` 같은 비밀이 그 자식 프로세스 ``os.environ`` 에 그대로 보이면, LLM 코드가 의도치 않게 (또는 prompt-injection 으로) 그 값을 읽어 외부로 보낼 수 있다. Wave 4-I 는 자식에게 진짜로 필요한 변수(PATH, HOME, LANG, VIRTUAL_ENV, pytest 운영 변수 등)만 통과시키고 나머지(특히 ``DALLO_ENCRYPTION_KEY``)는 모두 차단한다."
 
+### Wave 4-J — command_env 경계 중립화 (analyzer → shared)
+
+- 머지 커밋: `TBD_AFTER_MERGE`
+- 구현 커밋: `TBD_AFTER_MERGE`
+- 주요 파일/영역:
+  - `shared/command_env.py` (신규 — Wave 4-E 구현 이전)
+  - `analyzer/command_env.py` (호환성 shim 으로 축소)
+  - `validator/syntax_checker.py`, `validator/test_runner.py` (analyzer→shared import 경로 정정)
+  - `analyzer/bandit_runner.py`, `analyzer/semgrep_runner.py`, `analyzer/sonar_runner.py`, `analyzer/dependency_scanner.py` (shared 경로로 import 통일)
+  - `tests/test_command_env_neutral_boundary.py` (신규 회귀 테스트)
+  - `tests/test_command_env_sanitizer.py` (import 경로 정정)
+- 이전 구조: Wave 4-E 가 도입한 ``build_child_env`` 는 분석기/검증기/통합 어디서나 동일하게 필요한 *공유 경계 헬퍼* 임에도, 구현이 ``analyzer/command_env.py`` 에 위치해 있어 Wave 4-I 시점의 ``validator/syntax_checker.py`` 와 ``validator/test_runner.py`` 가 ``from analyzer.command_env import build_child_env`` 로 analyzer 패키지를 import 해야 했다. 즉 **검증 계층이 분석 계층의 모듈을 참조** 하는 의존 방향이 발생했다.
+- 문제/위험: 클린 아키텍처 관점에서, validator (검증 도메인) 가 analyzer (분석 도메인) 에 의존하는 것은 두 도메인의 결합을 강화하고 향후 어느 한쪽만 다시 패키징할 때 import 경로를 강제로 끌고 다니게 한다. 또한 보안 관점에서, 시크릿 차단이라는 횡단 관심사가 한 응용 패키지(``analyzer/``)에 묶여 있으면 “이 sanitizer 는 analyzer 전용” 으로 오해될 위험이 있다 (실제로 4-I 가 그 오해를 깨면서 의존 방향만 비뚤어진 채 확장된 형태였다).
+- 변경:
+  - ``shared/command_env.py`` 를 신규 생성 — Wave 4-I 까지의 ``analyzer/command_env.py`` 구현(allowlist/deny/extras/시그니처) 을 그대로 옮긴다. 정책/상수/시그니처는 한 글자도 바꾸지 않는다 (동작 보존). 모듈 docstring 만 “analyzer 전용” → “shared 중립 boundary” 표현으로 갱신한다.
+  - ``analyzer/command_env.py`` 는 ``from shared.command_env import build_child_env`` 한 줄 + ``__all__`` 만 갖는 호환성 shim 으로 축소한다. 외부/legacy caller 가 여전히 ``from analyzer.command_env import build_child_env`` 로 동작하도록 유지한다.
+  - validator 의 두 caller (``validator/syntax_checker.py``, ``validator/test_runner.py``) 와, 일관성을 위해 analyzer 의 caller 4 개 (``bandit_runner.py``, ``semgrep_runner.py``, ``sonar_runner.py``, ``dependency_scanner.py``) 의 import 를 ``shared.command_env`` 로 통일한다.
+  - 회귀 테스트 ``tests/test_command_env_neutral_boundary.py`` 추가: shared 경로 import 동작, shim identity (``analyzer.command_env.build_child_env is shared.command_env.build_child_env``), validator 소스에 analyzer 경로 import 부재, ``shared/command_env.py`` 가 analyzer/validator 를 import 하지 않음, 그리고 secret-deny / extras capability grant 동작이 shared 경로에서도 보존됨을 검증.
+- 클린 아키텍처 적합성: 횡단 관심사인 “자식 env sanitizer” 를 ``shared/`` 로 끌어올려, analyzer/validator/integrations 가 동등한 의존 방향(*안쪽으로*) 으로 참조하게 한다. validator 가 analyzer 를 참조하던 비뚤어진 의존을 제거하고, 새 도메인이 같은 sanitizer 를 쓰고 싶을 때 analyzer 를 끌어들이지 않아도 되도록 만든다.
+- 보존된 동작:
+  - ``build_child_env`` 의 함수 시그니처, 키워드 인자(``extras`` / ``base_env`` / ``allowlist`` / ``deny_name_patterns``), 기본 allowlist (PATH, HOME, USER, LOGNAME, SHELL, TERM, TMPDIR, TEMP, TMP, LANG, LANGUAGE, LC_ALL, TZ, VIRTUAL_ENV, PYENV_ROOT, PYENV_VERSION, PYTHONPATH, PYTHONUTF8, PYTHONDONTWRITEBYTECODE, PYTHONIOENCODING, JAVA_HOME, JAVA_OPTS, SONAR_SCANNER_OPTS, SONAR_USER_HOME, HTTP/HTTPS/NO/ALL_PROXY 대·소문자 8 개, CI, GITHUB_ACTIONS), ``LC_`` prefix, deny substring (TOKEN/SECRET/PASSWORD/PASS/CREDENTIAL/API_KEY/APIKEY/KEY/AUTH), deny exact (``ANTHROPIC_API_KEY`` ~ ``SONAR_TOKEN`` 의 21 개) 모두 동일.
+  - extras 빈 문자열 무시, extras 가 base 의 동명 변수를 덮어쓰는 마지막 단계 적용, ``GITHUB_TOKEN`` 의 ambient 차단 정책 동일.
+  - Wave 4-D ~ Wave 4-I 가 도입한 caller-specific allowlist (Bandit/Semgrep/dependency_scanner/validator pytest) 는 caller 측에 그대로 남아 있으며, sanitizer 가 함수 객체로 동일하므로 결과 dict 도 동일.
+  - ``analyzer.command_env.build_child_env`` 호출은 shim 을 통해 동일 함수 객체로 redirect 되어 caller 호환성을 100% 유지.
+- 검증 근거:
+  - RED: ``tests/test_command_env_neutral_boundary.py`` 의 7 개 신규 테스트 모두 fail (``shared.command_env`` 미존재 + validator 소스에 analyzer import 잔존), ``test_command_env_sanitizer.py`` 21 passed.
+  - GREEN targeted: ``tests/test_command_env_neutral_boundary.py`` ``tests/test_command_env_sanitizer.py`` ``tests/test_static_tool_command_runner_adapter.py`` ``tests/test_sonar_runner_adapter.py`` ``tests/test_dependency_scanner_runner_adapter.py`` ``tests/test_validator_command_runner_adapter.py`` → 183 passed in 0.61s.
+  - 실 외부 도구 호출 0건. 본 wave 는 내부 import 경로 + 신규 모듈 파일 추가만 다루며, subprocess/HTTP/파일 어댑터의 동작 면은 건드리지 않는다.
+  - 환경 의존(외부 ``bandit`` 바이너리 미설치) 으로 본래부터 fail 하던 ``tests/test_bandit_runner.py`` 5 케이스는 Wave 4-J 와 무관하며, Wave 4-I head (`d44c9b2`) 에서도 동일 5 케이스가 동일 사유로 fail 함을 재현 확인했다.
+- 명시적 비적용 (Wave 4-K 는 본 wave 에서 구현하지 않는다):
+  - sandbox 경로/심볼릭 링크/cleanup 하드닝 (Wave 4-K 후보) 은 의도적으로 다루지 않는다. 본 wave 는 import boundary 정정 한 가지 책임만 옮긴다.
+  - 신규 caller-specific allowlist 추가/삭제, deny substring 변경, extras 동작 변경, validator/analyzer 의 어댑터 시그니처 변경, ``shared/schemas.py`` 변경 모두 비적용.
+- Rollback: `git revert -m 1 TBD_AFTER_MERGE` (구현 커밋만 되돌릴 경우 `git revert TBD_AFTER_MERGE`). 되돌려도 호환성 shim 패턴이 사라지는 것뿐, validator 가 다시 analyzer 를 import 하는 4-I 시점 동작으로 복귀한다.
+- 초보자용 설명: "Wave 4-E 가 만든 자식 env sanitizer 는 analyzer 전용이 아니라 *모두가 쓰는 보안 헬퍼* 다. 그런데 파일이 analyzer 폴더에 있다 보니, validator 가 그 함수를 쓰려고 analyzer 를 import 해야 했다. Wave 4-J 는 그 헬퍼를 ``shared/`` 로 옮기고, 옛 위치는 ‘이 함수는 사실 shared 에 있어요’ 라고 가리키는 빈 껍데기(shim) 만 남겼다. 동작은 한 글자도 바뀌지 않았다."
+
 ---
 
 ## 9. 보안 강화 관점 요약
 
-이 절은 Wave 2-S → Wave 4-I 을 보안 관점으로 다시 본다.
+이 절은 Wave 2-S → Wave 4-J 를 보안 관점으로 다시 본다.
 
 ### 9.1 무엇이 줄어들었나
 
 - **secret 누출 경로 감소**
   - argv exposure: Sonar 토큰이 `-Dsonar.token=...` 로 argv 에 들어가던 위험 제거(Wave 4-D).
-  - ambient env leakage: 부모 env 의 secret-like 변수가 자식 도구로 묵시 상속되던 위험 제거(Wave 4-E ~ 4-I). Wave 4-H 는 pip-audit/npm 의 사설 레지스트리·자격증명 변수까지 ambient 상속을 차단하고 `AUTH` substring 기반 deny 보강을 추가했고, Wave 4-I 는 validator 의 flake8 와 sandbox pytest 자식 프로세스까지 같은 sanitizer 를 적용해 LLM 이 생성한 코드가 부모 env 의 ``ANTHROPIC_API_KEY`` / ``GITHUB_TOKEN`` / ``DALLO_ENCRYPTION_KEY`` / ``DALLO_API_KEYS`` 같은 시크릿에 닿지 못하게 했다.
+  - ambient env leakage: 부모 env 의 secret-like 변수가 자식 도구로 묵시 상속되던 위험 제거(Wave 4-E ~ 4-I). Wave 4-H 는 pip-audit/npm 의 사설 레지스트리·자격증명 변수까지 ambient 상속을 차단하고 `AUTH` substring 기반 deny 보강을 추가했고, Wave 4-I 는 validator 의 flake8 와 sandbox pytest 자식 프로세스까지 같은 sanitizer 를 적용해 LLM 이 생성한 코드가 부모 env 의 ``ANTHROPIC_API_KEY`` / ``GITHUB_TOKEN`` / ``DALLO_ENCRYPTION_KEY`` / ``DALLO_API_KEYS`` 같은 시크릿에 닿지 못하게 했다. Wave 4-J 는 동일한 sanitizer 의 의존 방향을 정정했다 — 정책/동작은 그대로 두면서 ``shared/command_env.py`` 로 옮겨 analyzer/validator 가 평등하게 의존하도록 만들고, 외부 caller 호환성을 위한 shim 만 ``analyzer/command_env.py`` 에 남겼다 (보안 정책 변화 없음, 의존 그래프만 정정).
 - **외부 명령 보안 통제 일원화**
   - `subprocess.run` 호출이 어댑터(`StaticToolCommandRunner`, `DependencyCommandRunner`, `ValidatorCommandRunner`) 에 모임.
   - shell=True 금지, list-argv 강제, timeout 명시.
@@ -837,15 +873,16 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-## 10. 현재 상태 (Wave 4-I 시점)
+## 10. 현재 상태 (Wave 4-J 시점)
 
-- 로컬 `main` 에 Wave 4-I 머지 커밋 `2217036` 이 포함되어 있다 (구현 커밋 `7fe88d8`).
-  - Wave 4-H 머지 커밋 `00792a6` 위에 Wave 4-I 가 단일 커밋으로 추가되었다 (push/PR/deploy 미수행 정책 유지).
-- 본 head 는 **로컬에만 존재**하며 원격으로 push 되지 않았고, PR/deploy 도 수행되지 않았다.
-- 마지막 검증된 전체 테스트 결과 (Wave 4-I 시점): `654 passed, 5 warnings in 17.27s` (targeted 55 passed in 0.12s 동반).
-  - 5 warnings 는 SQLAlchemy `datetime.datetime.utcnow()` 와 asyncio no-current-event-loop 관련 기존 deprecation warnings 로, 이번 리팩터링과 무관하다.
-- 보안 스캔(추가 라인 secret-like / dangerous patterns / 운영 영역) 모두 clean.
+- 로컬 `main` 에 Wave 4-J 머지 커밋 `TBD_AFTER_MERGE` 가 포함될 예정이다 (구현 커밋 `TBD_AFTER_MERGE`).
+  - Wave 4-I 머지 커밋 `2217036` 위에 Wave 4-J 가 단일 커밋으로 추가된다 (push/PR/deploy 미수행 정책 유지).
+- 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR/deploy 도 수행되지 않았다.
+- 마지막 검증된 targeted 테스트 결과 (Wave 4-J 시점): `tests/test_command_env_neutral_boundary.py` `tests/test_command_env_sanitizer.py` `tests/test_static_tool_command_runner_adapter.py` `tests/test_sonar_runner_adapter.py` `tests/test_dependency_scanner_runner_adapter.py` `tests/test_validator_command_runner_adapter.py` → **183 passed in 0.61s**.
+  - 환경 의존(외부 ``bandit`` 바이너리 미설치) 으로 ``tests/test_bandit_runner.py`` 의 5 케이스가 fail 하나, Wave 4-I head (`d44c9b2`) 에서도 동일 5 케이스가 동일 사유로 fail 하므로 본 wave 와 무관한 환경 이슈로 식별된다.
+- 보안 스캔(추가 라인 secret-like / dangerous patterns / 운영 영역) 모두 clean. 본 wave 는 동작/정책 변경이 없고 import 경로 + 신규 모듈 파일만 다룬다.
 - 다음 권장 작업 후보:
+  - **Wave 4-K (deferred)**: validator sandbox pytest 의 경로/심볼릭 링크/cleanup 하드닝. 현재는 ``XDG_CACHE_HOME`` / ``XDG_CONFIG_HOME`` 등 sandbox 내부 캐시/임시 파일 경로의 traversal/symlink race 를 별도 어댑터에서 검증하지 않는다. Wave 4-J 에서는 의도적으로 다루지 않았다.
   - 사설 PyPI/npm 레지스트리 capability grant wave (필요해질 때): pip 의 `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL` 와 npm 의 `NPM_CONFIG_REGISTRY` + `_authToken` 을 명시적 `DependencyScanner` 생성자 인자 + `build_child_env(extras=...)` 패턴으로 도입.
   - Sandbox pytest 격리 강화: 별도 user 또는 chroot 등 OS 수준 격리 검토 (현재는 환경 변수 통제만 강화).
 
@@ -874,4 +911,4 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-*문서 버전: Wave 4-I 시점 (2026-05-06).*
+*문서 버전: Wave 4-J 시점 (2026-05-07).*

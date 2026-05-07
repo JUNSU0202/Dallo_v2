@@ -26,7 +26,7 @@ import logging
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
-from analyzer.command_env import build_child_env
+from shared.command_env import build_child_env
 from analyzer.dependency_command_runner import DependencyCommandRunner
 
 logger = logging.getLogger(__name__)

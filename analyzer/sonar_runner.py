@@ -16,7 +16,7 @@ from typing import Callable, Optional
 from dataclasses import dataclass
 
 from analyzer.bandit_runner import Vulnerability, AnalysisResult
-from analyzer.command_env import build_child_env
+from shared.command_env import build_child_env
 from analyzer.sonar_http_client import (
     HttpConnectionError,
     HttpRequestError,
@@ -89,12 +89,14 @@ class SonarRunner:
         남아 있던 ambient ``SONAR_TOKEN`` 이 child scanner 로 상속되지
         않도록 한다(env=None 으로 두면 부모 환경 전체가 상속된다).
 
-        Wave 4-E: child env 구성을 ``analyzer.command_env.build_child_env``
-        헬퍼에 위임한다. 부모 env 를 통째로 복사하지 않고 보수적인 allowlist
-        + 시크릿 이름 deny filter 를 거쳐, scanner 에 필요한 변수만 통과한다.
-        ``SONAR_TOKEN`` 은 ``self.config.token`` 이 비어있지 않을 때만 명시적인
-        ``extras`` 로 주입되며, 부모 환경의 ambient 시크릿(``ANTHROPIC_API_KEY``,
-        ``GITHUB_TOKEN``, ``AWS_SECRET_ACCESS_KEY`` 등) 은 child 로 상속되지 않는다.
+        Wave 4-E/4-J: child env 구성을 ``shared.command_env.build_child_env``
+        (Wave 4-J 에서 ``analyzer.command_env`` 로부터 analyzer/validator 양쪽이
+        공유하는 중립 경계로 옮김) 헬퍼에 위임한다. 부모 env 를 통째로 복사하지
+        않고 보수적인 allowlist + 시크릿 이름 deny filter 를 거쳐, scanner 에
+        필요한 변수만 통과한다. ``SONAR_TOKEN`` 은 ``self.config.token`` 이
+        비어있지 않을 때만 명시적인 ``extras`` 로 주입되며, 부모 환경의 ambient
+        시크릿(``ANTHROPIC_API_KEY``, ``GITHUB_TOKEN``, ``AWS_SECRET_ACCESS_KEY``
+        등) 은 child 로 상속되지 않는다.
         """
         cmd = [
             "sonar-scanner",

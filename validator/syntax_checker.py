@@ -21,7 +21,7 @@ from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.schemas import PatchSuggestion, PatchStatus
-from analyzer.command_env import build_child_env
+from shared.command_env import build_child_env
 from validator.validator_command_runner import ValidatorCommandRunner
 
 

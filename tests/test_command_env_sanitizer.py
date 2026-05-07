@@ -1,4 +1,5 @@
-"""``analyzer.command_env.build_child_env`` 단위 테스트 (Wave 4-E).
+"""``shared.command_env.build_child_env`` 단위 테스트 (Wave 4-E 도입,
+Wave 4-J 에서 ``shared/`` 로 중립화).
 
 목적
 ----
@@ -20,7 +21,7 @@ sanitizer 가:
 
 from __future__ import annotations
 
-from analyzer.command_env import build_child_env
+from shared.command_env import build_child_env
 
 
 # ============================================================
