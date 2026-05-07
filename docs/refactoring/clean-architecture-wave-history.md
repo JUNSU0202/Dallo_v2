@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-L 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-M 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -33,7 +33,7 @@ Dallo 의 리팩터링은 **세 단계의 큰 흐름** 으로 진행되었다.
 | --- | --- | --- | --- |
 | **Wave 2 (A~S, 19 wave)** | API/라우터/서비스/부트스트랩/경로 안정화 | 단일 파일에 뭉친 책임을 라우터·서비스 계층으로 분리, 부트스트랩 부수효과 정리, 경로 안전성 강화 | `api/server.py` 거대 파일을 라우터/서비스 단위로 분해 |
 | **Wave 3 (A~J, 11 wave)** | analyzer/외부 의존 경계 추출 | subprocess·HTTP·시간 의존성을 어댑터(seam)로 분리, fakeable 테스트 가능한 구조로 전환 | `pip-audit`, Bandit, Semgrep, Sonar scanner, Sonar HTTP, polling clock 까지 모두 외부 경계 격리 |
-| **Wave 4 (A~L, 12 wave)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 |
+| **Wave 4 (A~M, 13 wave)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam + agent LLM retry sleeper seam | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam, ``DalloAgent`` LLM retry sleeper DI seam | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 + LLM retry 시계 경계 fakeable 화 |
 
 핵심 원칙은 다음 네 가지다.
 
@@ -224,7 +224,8 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-I | `2217036` | Validator child env sanitizer | `validator/validator_command_runner.py`, `validator/syntax_checker.py`, `validator/test_runner.py` | flake8/sandbox pytest sanitized env + sandbox pytest caller-specific allowlist |
 | 4-J | `4a77782` | command_env boundary 중립화 | `shared/command_env.py`, `analyzer/command_env.py` (shim), `validator/syntax_checker.py`, `validator/test_runner.py`, `analyzer/{bandit,semgrep,sonar,dependency_scanner}_runner.py` | analyzer→shared 이동 + analyzer 측 호환성 shim, validator 의 analyzer 의존 제거 |
 | 4-K | `515a9d1` | Validator sandbox 경로/심볼릭 링크/cleanup 하드닝 | `validator/test_runner.py`, `tests/test_validator_sandbox_hardening.py` | sandbox 경로 traversal 차단 + symlink 정책 명시 + finally cleanup |
-| 4-L | `875c3ac` | Security checker 스캐너 시 (Bandit/Semgrep DI) | `validator/security_checker.py`, `tests/test_security_checker.py` | ``SecurityChecker`` DI seam + lazy default factory + 23 신규 회귀 테스트 |
+| 4-L | `875c3ac` | Security checker 스캐너 seam (Bandit/Semgrep DI) | `validator/security_checker.py`, `tests/test_security_checker.py` | ``SecurityChecker`` DI seam + lazy default factory + 23 신규 회귀 테스트 |
+| 4-M | `b842b21` | LLM agent retry sleeper seam | `agent/llm_agent.py`, `tests/test_llm_agent_sleeper_adapter.py` | retry-loop ``time.sleep`` 경계를 DI 로 fakeable 화하고 운영 기본값(``time.sleep``) 보존 |
 
 ---
 
@@ -941,11 +942,62 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - Rollback: `git revert -m 1 875c3ac` (구현 커밋만 되돌릴 경우 `git revert 55b6731`). 되돌리면 ``SecurityChecker`` 단위 테스트가 사라지지만 (회귀 가드 약화), 외부 호출 정책 / 상태 매핑 / fail-open 동작은 그대로다. ``SecurityChecker()`` 호출자 (``analyzer/pipeline.py``) 는 두 모드 모두에서 호환된다.
 - 초보자용 설명: "보안 재검증기는 LLM 이 만든 새 코드를 임시 파일로 떨어뜨리고 거기에 ``bandit`` 과 ``semgrep`` 두 개의 정적 분석기를 다시 돌려, 새로 도입된 취약점이 있는지 본다. Wave 4-L 이전에는 이 두 분석기를 만드는 코드가 ``security_checker`` 함수 안에 박혀 있어, 단위 테스트가 ‘진짜 ``bandit`` 을 실행하지 않고 가짜 ``bandit`` 을 끼워넣는’ 자리가 없었다. Wave 4-L 은 ``SecurityChecker(bandit_runner=..., semgrep_runner=...)`` 라는 작은 ‘구멍’ 을 뚫어, 테스트에서는 가짜를, 실제 운영에서는 그대로 진짜를 쓰게 했다. 사용자가 평소처럼 ``SecurityChecker()`` 라고만 부르면 진짜 ``BanditRunner`` 와 ``SemgrepRunner`` 가 호출 시점에만 만들어지므로, 모듈을 import 하는 것만으로 외부 도구가 깨어나는 일은 없다. 이렇게 해서 보안 재검증기의 ‘상태 매핑이 깨지지 않았는지’ 같은 회귀 검사를 외부 도구 없이도 빠르게 돌릴 수 있다."
 
+### Wave 4-M — LLM agent retry sleeper seam
+
+- 머지 커밋: b842b21 merge: integrate Wave 4-M llm sleeper seam
+- 구현 커밋: 0d1a39e refactor(agent): Wave 4-M add llm retry sleeper seam
+- 주요 파일/영역:
+  - `agent/llm_agent.py`
+  - `tests/test_llm_agent_sleeper_adapter.py` (신규 회귀 테스트)
+- 이전 구조: ``DalloAgent`` 의 retry 경로 (``generate_patch`` / ``generate_multi_patches``) 는 rate-limit 응답을 만나거나 재시도가 필요할 때 함수 본문에서 ``time.sleep(wait)`` 를 직접 호출했다. 즉 retry 의 “기다린다” 라는 동작이 모듈 전역의 ``time.sleep`` 에 직접 매여 있었다. 결과적으로 retry 경로 단위 테스트는 (1) 실제 wall-clock 만큼 기다리거나, (2) 전역 ``time.sleep`` 을 monkeypatch 해서 우회해야 했다.
+- 문제/위험:
+  - **테스트 비결정성/지연**: 실제 wall-clock 대기는 retry 경로 검증을 느리고 비결정적으로 만든다 (rate-limit 메시지의 retry-delay 가 ``"3"`` 초로 파싱되면 단위 테스트가 3 초씩 멈춘다).
+  - **외부 시계 경계의 도메인 침투**: 핵심 LLM 오케스트레이션(``DalloAgent``) 안에 ``time.sleep`` 이라는 외부 시계 경계가 그대로 박혀 있어, “retry 로직” 이라는 도메인 책임과 “실제 OS 시간을 흘려보낸다” 라는 외부 부수효과가 한 함수 안에서 섞여 있었다.
+  - **monkeypatch 의존**: 전역 ``time.sleep`` 을 가로채는 테스트는 같은 인터프리터에서 실행되는 다른 라이브러리에도 영향을 주며, 테스트 격리 측면에서 비대칭적이다.
+- 변경:
+  - ``DalloAgent.__init__`` 에 키워드-온리 ``sleeper`` 의존성을 추가. 기본값은 ``None`` 이며 ``self._sleeper = sleeper if sleeper is not None else time.sleep`` 로 주입한다. 즉 ``DalloAgent()`` 기존 호출 형태는 그대로 유지된다.
+  - ``generate_patch`` 와 ``generate_multi_patches`` 의 retry 대기 호출을 모두 ``time.sleep(wait)`` → ``self._sleeper(wait)`` 로 교체. 동일 인스턴스의 retry 경로는 모두 같은 sleeper 객체를 통과한다.
+  - 신규 ``tests/test_llm_agent_sleeper_adapter.py`` 추가:
+    - 기본 동작 가드: ``sleeper`` 미주입 시 ``self._sleeper is time.sleep``.
+    - 키워드-온리 호환성: ``DalloAgent(sleeper=fake)`` 만 허용되며 위치 인자 형태는 거부.
+    - rate-limit retry: 429/유사 응답에서 retry-delay 파싱 후 fake sleeper 가 받은 ``sleep_values`` 에 기대값이 누적되는지 검증.
+    - key-rotation skip: rotate_key 로 새 키가 잡히는 경우 sleeper 가 호출되지 않는다 (즉시 재시도).
+    - non-rate-limit no-sleep: rate-limit 가 아닌 일반 예외/실패 경로에서는 sleeper 가 호출되지 않는다.
+    - success no-sleep: 첫 시도가 성공하면 sleeper 가 호출되지 않는다.
+    - exhausted retry: max_retries 소진 시 기존의 “마지막 시도 직전 sleep” 동작이 보존되며, 최종 실패 status 가 그대로다.
+    - multi-patch path: ``generate_multi_patches`` 도 동일하게 ``self._sleeper`` 를 통과하며 retry 경로가 동작한다.
+- 클린 아키텍처 적합성: 시간(``time.sleep``) 이라는 외부 boundary 를 도메인 안에서 fakeable 한 seam 으로 분리한다. 이는 Wave 3-J 의 Sonar polling clock/sleeper 분리, Wave 4-A 이후의 어댑터/DI seam 패턴과 동일한 형태로, ``DalloAgent`` 에 처음으로 동일 패턴을 적용한 wave 다.
+- 보존된 동작:
+  - ``DalloAgent()`` 기본 생성자 — sleeper 를 명시하지 않으면 운영 기본값 ``time.sleep`` 그대로 사용.
+  - ``max_retries`` 값과 retry 의사결정 흐름.
+  - retry-delay 파싱 (``_extract_retry_delay`` 동작) 동일.
+  - provider call 흐름, ``rotate_key`` 동작, SYSTEM_PROMPT, prompts/parsers/cache/masking 흐름 모두 동일.
+  - API 응답 모양과 ``shared/schemas.py`` 무변경.
+  - 기존의 “마지막 시도 직전 sleep 후 FAILED” 동작도 그대로 (sleeper 만 통과 지점이 바뀐다).
+- 검증 근거:
+  - Worktree targeted: ``tests/test_llm_agent_sleeper_adapter.py`` ``tests/test_llm_parser.py`` → **23 passed in 20.69s**.
+  - Worktree full: ``pytest tests/ -q`` → **712 passed, 5 warnings**.
+  - Worktree fake smoke: ``WAVE4M_FAKE_SMOKE_PASS fake_provider_used fake_sleeper_used no_real_llm sleep_values=[3]`` — fake provider/fake sleeper 만 호출되고 실제 LLM 호출은 0건, sleeper 가 받은 값은 retry-delay 3 초 1 회.
+  - Worktree security/schema: ``WAVE4M_AST_SECURITY_SCAN_CLEAN``, ``WAVE4M_FORBIDDEN_TEXT_SCAN_CLEAN``, ``WAVE4M_SHARED_SCHEMAS_UNCHANGED``.
+  - Independent review: APPROVED, scope-correct, behavior preserved, no regression concerns.
+  - Final main targeted (post-merge): **23 passed in 21.02s**.
+  - Final main full (post-merge): ``pytest tests/ -q`` → **712 passed, 5 warnings in 32.99s** (Wave 4-L 시점 697 → +15 신규 회귀 테스트, 그 중 본 wave 의 sleeper-adapter 테스트가 핵심).
+  - Final main fake smoke / 운영 보안 / schema (post-merge): ``WAVE4M_MAIN_FAKE_SMOKE_PASS fake_provider_used fake_sleeper_used no_real_llm sleep_values=[3] status=PatchStatus.GENERATED``, ``WAVE4M_MAIN_AST_SECURITY_SCAN_CLEAN``, ``WAVE4M_MAIN_FORBIDDEN_TEXT_SCAN_CLEAN``, ``WAVE4M_MAIN_SHARED_SCHEMAS_UNCHANGED``.
+  - 실 외부 호출 0건. push / PR / deploy / production DB / 실 LLM 호출 / network 호출 모두 수행되지 않았다.
+- 명시적 비적용 (의도적 비행동):
+  - LLM provider 변경 비적용 (Gemini/OpenRouter 호출 흐름 그대로).
+  - Key rotation 정책 변경 비적용 (rotate_key 동작 그대로).
+  - Retry 정책 변경 비적용 (max_retries / retry-delay 파싱 / rate-limit 판정 흐름 그대로).
+  - API / schema / frontend 변경 비적용.
+  - ``shared/schemas.py`` 변경 없음.
+- Rollback: `git revert -m 1 b842b21` (구현 커밋만 되돌릴 경우 `git revert 0d1a39e`). 되돌리면 sleeper-adapter 회귀 가드는 사라지지만, 운영 시 ``time.sleep`` 직접 호출로 돌아가 동작은 동일하다.
+- 초보자용 설명: "‘sleeper’ 라는 말이 어렵게 들리지만, 실은 단순히 ‘얼마 동안 기다리는 함수’ 다. 평소(운영) 에는 그 함수가 진짜 ``time.sleep`` 이라서 정말로 그 시간만큼 멈춘다. Wave 4-M 이전에는 이 ‘기다린다’ 라는 동작이 ``DalloAgent`` 함수 안에 직접 박혀 있어서, 단위 테스트가 ‘LLM rate-limit 에 걸리면 3 초 기다리고 다시 시도한다’ 를 검증하려면 진짜로 3 초를 기다리거나 전역 ``time.sleep`` 을 우회해야 했다. Wave 4-M 은 ``DalloAgent(sleeper=...)`` 라는 작은 ‘구멍’ 을 만들었다. 테스트는 그 자리에 ‘기다린 척하면서 받은 초 수를 리스트에 적기만 하는 가짜 함수’ 를 끼워넣는다. 그러면 retry 로직은 즉시 실행되고, 테스트는 ‘sleeper 가 [3] 초 받았는가’ 를 보면 끝난다. 사용자가 평소처럼 ``DalloAgent()`` 라고만 부르면 진짜 ``time.sleep`` 이 그대로 쓰이므로 운영 동작은 한 줄도 바뀌지 않는다. 즉 진짜 Gemini/OpenRouter 호출이나 실제 wall-clock 대기 없이 retry 동작이 빠르게, 결정적으로 검증된다."
+
 ---
 
 ## 9. 보안 강화 관점 요약
 
-이 절은 Wave 2-S → Wave 4-L 을 보안 관점으로 다시 본다.
+이 절은 Wave 2-S → Wave 4-M 을 보안 관점으로 다시 본다.
 
 ### 9.1 무엇이 줄어들었나
 
@@ -971,6 +1023,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 - 모든 외부 명령/HTTP 어댑터는 fake 로 교체 가능하다.
 - 따라서 테스트 실행은 실제 Bandit/Semgrep/Sonar/pip-audit/npm/flake8/sandbox pytest/GitHub API 를 호출하지 않는다.
+- Wave 4-M 이후로는 ``DalloAgent`` 의 retry 대기(``self._sleeper``) 까지 fake 로 교체 가능해, 단위 테스트가 “rate-limit 에 걸려서 3 초 기다리고 재시도한다” 같은 시나리오를 실제 wall-clock 대기 없이 즉시 검증한다. 즉 fake seam 의 적용 범위가 외부 명령/HTTP 에서 *시계 경계(time boundary)* 까지 확장되어, 테스트가 진짜 Gemini/OpenRouter 호출이나 실제 ``time.sleep`` 부수효과를 일으킬 가능성도 0 에 가깝게 줄어들었다.
 - 이 구조 덕분에 “테스트가 비밀을 흘리거나 외부에 부수효과를 일으킬 가능성” 자체가 거의 0 이 된다.
 
 ### 9.4 GitHub push 를 미루고 있는 이유 (의도된 비행동)
@@ -984,16 +1037,22 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-## 10. 현재 상태 (Wave 4-L 시점)
+## 10. 현재 상태 (Wave 4-M 시점)
 
-- 로컬 `main` 에 Wave 4-L 머지 커밋 `875c3ac` 까지 포함되었다 (Wave 4-L 구현 커밋 `55b6731`, 그 직전 Wave 4-K 머지 커밋 `515a9d1` / Wave 4-K 구현 커밋 `7bf8781`).
-  - Wave 4-L 은 브랜치 `w4l-security-checker-seam` 에서 `e7e25e3` (Wave 4-K Hermes 머지 SHA 동기화 docs) 위에 단일 구현 커밋 `55b6731` 으로 추가된 뒤, 머지 커밋 `875c3ac` 으로 로컬 `main` 에 통합되었다. push / PR / deploy 는 수행되지 않았다 (정책 유지).
-- 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출도 수행되지 않았다.
-- 마지막 검증된 targeted 테스트 결과 (final main, post-merge): `tests/test_validator_sandbox_hardening.py` `tests/test_validator_command_runner_adapter.py` `tests/test_command_env_neutral_boundary.py` `tests/test_security_checker.py` → **77 passed in 0.19s**. 그 중 ``tests/test_security_checker.py`` 단독은 **23 passed in 0.10s**.
-  - 마지막 검증된 full 테스트 결과 (final main, post-merge): **697 passed, 5 warnings in 16.52s**. Wave 4-K 시점 674 → +23 신규 ``test_security_checker.py`` 회귀 테스트. 5 warnings 는 Wave 4-J/4-K 와 동일한 기존 deprecation warning 으로, 본 wave 의 blocker 가 아니다.
-- Post-merge fake smoke: ``WAVE4L_MAIN_FAKE_SMOKE_PASS injected_runners_used status_verified no_real_scanners`` — 주입된 fake ``BanditRunner`` / ``SemgrepRunner`` 만 호출되고 상태 매핑이 검증되었으며 실제 스캐너 인스턴스화는 없음.
-- 운영 보안 스캔: ``MAIN_AST_PRODUCTION_DANGER_SCAN_CLEAN`` (production AST dangerous pattern 0건), production secret assignment scan clean (하드코딩 시크릿 0건), ``MAIN_NO_API_SERVER_COUPLING_IN_CHANGED_FILES`` (변경 파일에서 ``api.server`` 결합 0건), ``MAIN_SHARED_SCHEMAS_UNCHANGED`` (``shared/schemas.py`` diff 0). 본 wave 는 외부 동작 / 정책 변경이 없고 ``SecurityChecker`` 생성자에 키워드 시 주입 자리만 추가했다. ``shared/schemas.py`` / ``shared/command_env.py`` / ``analyzer/bandit_runner.py`` / ``analyzer/semgrep_runner.py`` 변경 없음.
-- 다음 권장 작업 후보:
+- 로컬 `main` 에 Wave 4-M 머지 커밋 `b842b21` 까지 포함되었다 (Wave 4-M 구현 커밋 `0d1a39e`, 그 직전 Wave 4-L 머지 커밋 `875c3ac` / Wave 4-L 구현 커밋 `55b6731`).
+  - Wave 4-M 은 Wave 4-L 머지 후의 docs 동기화 커밋(`2706f76`) 위에 단일 구현 커밋 `0d1a39e` 으로 추가된 뒤, 머지 커밋 `b842b21` 으로 로컬 `main` 에 통합되었다. push / PR / deploy 는 수행되지 않았다 (정책 유지).
+- 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / network 호출도 수행되지 않았다.
+- 마지막 검증된 targeted 테스트 결과 (final main, post-merge): `tests/test_llm_agent_sleeper_adapter.py` `tests/test_llm_parser.py` → **23 passed in 21.02s** (worktree 시점 동일 스위트 23 passed in 20.69s — 동일 결과, timing 만 환경 차이).
+  - 마지막 검증된 full 테스트 결과 (final main, post-merge): ``pytest tests/ -q`` → **712 passed, 5 warnings in 32.99s**. Wave 4-L 시점 697 → +15 신규 회귀 테스트 (그 중 핵심은 ``tests/test_llm_agent_sleeper_adapter.py``). 5 warnings 는 Wave 4-J/4-K/4-L 과 동일한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로, 본 wave 의 blocker 가 아니다.
+- Post-merge fake smoke: ``WAVE4M_MAIN_FAKE_SMOKE_PASS fake_provider_used fake_sleeper_used no_real_llm sleep_values=[3] status=PatchStatus.GENERATED`` — 주입된 fake provider 와 fake sleeper 만 호출되고, 실제 LLM/Gemini/OpenRouter 호출과 실제 ``time.sleep`` 대기는 없으며, retry-delay 3 초가 sleeper 가 받은 값으로 정확히 누적되었다. (worktree 시점 동일 결과: ``WAVE4M_FAKE_SMOKE_PASS fake_provider_used fake_sleeper_used no_real_llm sleep_values=[3]``.)
+- 운영 보안 스캔 (post-merge): ``WAVE4M_MAIN_AST_SECURITY_SCAN_CLEAN`` (production AST dangerous pattern 0건), ``WAVE4M_MAIN_FORBIDDEN_TEXT_SCAN_CLEAN`` (금지 텍스트/secret-like 패턴 0건), ``WAVE4M_MAIN_SHARED_SCHEMAS_UNCHANGED`` (``shared/schemas.py`` diff 0). 본 wave 는 외부 동작 / 정책 변경이 없고 ``DalloAgent`` 생성자에 키워드-온리 ``sleeper`` 자리를 추가하고 retry 경로의 ``time.sleep(wait)`` 호출을 ``self._sleeper(wait)`` 로 통과시킨 변경만 다룬다. ``shared/schemas.py`` / ``shared/command_env.py`` / ``analyzer/bandit_runner.py`` / ``analyzer/semgrep_runner.py`` / API / frontend 변경 없음.
+- Independent review: APPROVED, scope-correct, behavior preserved, no regression concerns.
+- Rollback: `git revert -m 1 b842b21` (구현 커밋만 되돌릴 경우 `git revert 0d1a39e`).
+- 다음 권장 작업 후보 (어느 것도 아직 승인된 wave 가 아님 — 후보 단계):
+  - **Wave 4-N (후보)** Bandit/Semgrep file I/O seam: 두 runner 가 결과 파일/임시 파일 읽기에 쓰는 file I/O 경계를 작은 어댑터/seam 으로 분리해 fakeable 화.
+  - **Wave 4-O (후보)** Validator file write seam: validator 측의 sandbox 외 파일 쓰기 경계를 어댑터/seam 으로 분리.
+  - **Wave 4-P (후보)** DB clock seam: DB 서비스 계층의 시계 의존(``datetime.now`` / ``utcnow``) 을 sleeper-adapter 와 동일 패턴으로 fakeable 화.
+  - **Wave 4-Q (후보)** dormant GitHub client HTTP seam: 휴면 상태인 ``integrations/github_client.py`` 의 HTTP 경계를 ``github_pr_comment_adapter`` 와 동일한 어댑터 패턴으로 정리할지 검토.
   - 사설 PyPI/npm 레지스트리 capability grant wave (필요해질 때): pip 의 `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL` 와 npm 의 `NPM_CONFIG_REGISTRY` + `_authToken` 을 명시적 `DependencyScanner` 생성자 인자 + `build_child_env(extras=...)` 패턴으로 도입.
   - Sandbox pytest 격리 강화: 별도 user 또는 chroot 등 OS 수준 격리 검토 (현재는 환경 변수 통제만 강화).
 
@@ -1022,4 +1081,4 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-*문서 버전: Wave 4-J 시점 (2026-05-07).*
+*문서 버전: Wave 4-M 시점 (2026-05-07).*
