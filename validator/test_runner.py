@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.schemas import PatchSuggestion, PatchStatus
 from shared.command_env import build_child_env
+from validator.file_io import FileIO, get_default_file_io
 from validator.validator_command_runner import ValidatorCommandRunner
 
 
@@ -120,11 +121,16 @@ class TestRunner:
         self,
         project_root: Optional[str] = None,
         runner: Optional[ValidatorCommandRunner] = None,
+        *,
+        file_io: Optional[FileIO] = None,
     ):
         self.project_root = project_root or os.path.dirname(
             os.path.dirname(os.path.abspath(__file__))
         )
         self._runner = runner or ValidatorCommandRunner()
+        # Wave 4-O: sandbox 타깃 쓰기 경계를 keyword-only seam 으로 분리.
+        # ``None`` 이면 ``_run_in_sandbox`` 시점에 lazy 로 기본 어댑터를 해석한다.
+        self._file_io = file_io
 
     def run(
         self,
@@ -219,11 +225,11 @@ class TestRunner:
                 else:
                     shutil.copy2(src, dst)
 
-            # 수정 코드 적용
+            # 수정 코드 적용 (Wave 4-O: file_io 경계로 위임)
             target_file = os.path.join(tmp_dir, original_file_path)
             if os.path.exists(target_file):
-                with open(target_file, "w", encoding="utf-8") as f:
-                    f.write(fixed_code)
+                file_io = self._file_io or get_default_file_io()
+                file_io.write_text(target_file, fixed_code)
 
             # pytest 실행
             test_path = os.path.join(tmp_dir, test_dir or "tests")

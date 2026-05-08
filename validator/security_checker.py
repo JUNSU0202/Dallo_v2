@@ -21,6 +21,7 @@ from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.schemas import PatchSuggestion, PatchStatus
+from validator.file_io import FileIO, get_default_file_io
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ class SecurityChecker:
         *,
         bandit_runner=None,
         semgrep_runner=None,
+        file_io: Optional[FileIO] = None,
     ):
         """
         Args:
@@ -66,9 +68,13 @@ class SecurityChecker:
             semgrep_runner: ``SemgrepRunner`` 인터페이스 더블(테스트 주입용).
                 ``None`` 이면 호출 시점에 ``SemgrepRunner(config="auto")`` 를
                 lazy 생성한다.
+            file_io: ``validator.file_io.FileIO`` 인터페이스 더블(테스트 주입용).
+                ``None`` 이면 ``_run_security_scan`` 시점에 lazy 로
+                ``get_default_file_io()`` 를 사용한다 (Wave 4-O).
         """
         self._bandit_runner = bandit_runner
         self._semgrep_runner = semgrep_runner
+        self._file_io = file_io
 
     def _get_bandit_runner(self):
         if self._bandit_runner is None:
@@ -165,10 +171,12 @@ class SecurityChecker:
 
         tmp_dir = tempfile.mkdtemp(prefix="dallo_revalidate_")
         try:
+            # Wave 4-O: 임시 파일 쓰기 경계를 file_io 어댑터로 위임.
+            file_io = self._file_io or get_default_file_io()
+
             # 수정 코드 스캔
             fixed_path = os.path.join(tmp_dir, f"fixed_{filename}")
-            with open(fixed_path, "w", encoding="utf-8") as f:
-                f.write(fixed_code)
+            file_io.write_text(fixed_path, fixed_code)
 
             fixed_vulns = self._scan_file(fixed_path, ext)
 
@@ -176,8 +184,7 @@ class SecurityChecker:
             original_vulns = []
             if original_code:
                 original_path = os.path.join(tmp_dir, f"original_{filename}")
-                with open(original_path, "w", encoding="utf-8") as f:
-                    f.write(original_code)
+                file_io.write_text(original_path, original_code)
                 original_vulns = self._scan_file(original_path, ext)
 
             # 비교 분석

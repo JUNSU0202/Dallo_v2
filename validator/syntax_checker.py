@@ -14,7 +14,6 @@ LLM이 생성한 수정 코드가 문법적으로 올바른지 검증합니다.
 import ast
 import sys
 import os
-import tempfile
 from dataclasses import dataclass
 from typing import Optional
 
@@ -22,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.schemas import PatchSuggestion, PatchStatus
 from shared.command_env import build_child_env
+from validator.file_io import FileIO, get_default_file_io
 from validator.validator_command_runner import ValidatorCommandRunner
 
 
@@ -41,8 +41,15 @@ class SyntaxChecker:
     수 있다 (Wave 4-A).
     """
 
-    def __init__(self, runner: Optional[ValidatorCommandRunner] = None):
+    def __init__(
+        self,
+        runner: Optional[ValidatorCommandRunner] = None,
+        *,
+        file_io: Optional[FileIO] = None,
+    ):
         self._runner = runner or ValidatorCommandRunner()
+        # Wave 4-O: flake8 임시 .py 쓰기 경계를 keyword-only seam 으로 분리.
+        self._file_io = file_io
 
     def check(self, patch: PatchSuggestion, language: str = "python") -> PatchSuggestion:
         """
@@ -138,12 +145,9 @@ class SyntaxChecker:
 
     def check_with_flake8(self, code: str) -> CheckResult:
         """flake8로 코드 스타일까지 검사합니다 (선택적)."""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", delete=False
-        ) as f:
-            f.write(code)
-            f.flush()
-            tmp_path = f.name
+        # Wave 4-O: 임시 .py 파일 생성/쓰기 경계를 file_io 어댑터로 위임.
+        file_io = self._file_io or get_default_file_io()
+        tmp_path = file_io.write_named_temp(code, suffix=".py")
 
         try:
             result = self._runner.run(
