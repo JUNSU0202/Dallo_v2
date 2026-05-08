@@ -19,6 +19,7 @@ from typing import Optional
 
 from analyzer.bandit_runner import Vulnerability, AnalysisResult
 from shared.command_env import build_child_env
+from analyzer.file_io import FileIO, get_default_file_io
 from analyzer.static_tool_command_runner import StaticToolCommandRunner
 
 
@@ -82,6 +83,8 @@ class SemgrepRunner:
         self,
         config: str = "auto",
         runner: Optional[StaticToolCommandRunner] = None,
+        *,
+        file_io: Optional[FileIO] = None,
     ):
         """
         Args:
@@ -90,9 +93,12 @@ class SemgrepRunner:
                     - "p/security-audit": 보안 감사 룰셋
                     - "p/owasp-top-ten": OWASP Top 10 룰셋
             runner: 외부 명령 실행 어댑터(테스트용 더블 주입 가능)
+            file_io: 결과 JSON 저장 + snippet enrichment 라인 읽기 경계 (Wave 4-N).
+                ``None`` 이면 ``run`` 시점에 lazy 로 기본 ``FileIO`` 가 해석된다.
         """
         self.config = config
         self._runner = runner or StaticToolCommandRunner()
+        self._file_io = file_io
 
     def detect_language(self, file_path: str) -> str:
         """파일 확장자로 언어를 감지합니다."""
@@ -145,9 +151,9 @@ class SemgrepRunner:
             result.raw_output = raw
 
             if output_path:
-                os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-                with open(output_path, "w", encoding="utf-8") as f:
-                    json.dump(raw, f, indent=2, ensure_ascii=False)
+                # Wave 4-N: file_io 경계로 위임.
+                file_io = self._file_io or get_default_file_io()
+                file_io.write_json(output_path, raw)
 
             result = self._parse_results(raw, result)
 
@@ -187,14 +193,16 @@ class SemgrepRunner:
                     cwe_id = cwe_val.split(":")[0].strip()
 
             # 코드 스니펫 — Semgrep lines가 짧으면 파일에서 주변 코드 가져오기
+            # (Wave 4-N: 파일 라인 읽기를 file_io 경계로 위임. 예외 swallowing
+            # 은 호출자 수준에서 그대로 유지된다.)
             lines = item.get("extra", {}).get("lines", "")
             start_line = item.get("start", {}).get("line", 0)
             end_line_num = item.get("end", {}).get("line", start_line)
             if len(lines.strip()) < 20 and start_line > 0:
                 try:
                     file_path = item.get("path", "")
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        all_lines = f.readlines()
+                    file_io = self._file_io or get_default_file_io()
+                    all_lines = file_io.read_text_lines(file_path)
                     ctx_start = max(0, start_line - 3)
                     ctx_end = min(len(all_lines), end_line_num + 2)
                     lines = "".join(all_lines[ctx_start:ctx_end])
