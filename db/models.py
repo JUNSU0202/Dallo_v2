@@ -18,7 +18,6 @@ DB 모델 정의 (db/models.py)
 """
 
 import os
-from datetime import datetime
 from sqlalchemy import (
     create_engine,
     Column,
@@ -36,6 +35,8 @@ from sqlalchemy.orm import (
     sessionmaker,
     relationship,
 )
+
+from db import clock
 
 
 # ============================================================
@@ -100,7 +101,7 @@ class AnalysisRun(Base):
     patches_verified = Column(Integer, default=0)
 
     # 시간
-    started_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, default=clock.now)
     completed_at = Column(DateTime, nullable=True)
     duration_seconds = Column(Float, nullable=True)
 
@@ -144,7 +145,7 @@ class Vulnerability(Base):
     function_code = Column(Text, default="")
 
     # 시간
-    detected_at = Column(DateTime, default=datetime.utcnow)
+    detected_at = Column(DateTime, default=clock.now)
 
     # 관계
     analysis_run = relationship("AnalysisRun", back_populates="vulnerabilities")
@@ -181,7 +182,7 @@ class Patch(Base):
     test_passed = Column(Boolean, nullable=True)
 
     # 시간
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=clock.now)
     verified_at = Column(DateTime, nullable=True)
 
     # 관계
