@@ -1063,8 +1063,8 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ### Wave 4-O — Validator file write seam
 
-- 머지 커밋: (TBD — Hermes local merge 전)
-- 구현 커밋: (worktree `/home/ubuntu/dallo-worktrees/w4o-validator-file-io-seam`, 브랜치 `w4o-validator-file-io-seam` 의 단일 구현 커밋)
+- 머지 커밋: `157a30d` (`merge: integrate Wave 4-O validator file io seam`)
+- 구현 커밋: `1cfcbcd` (`refactor(validator): Wave 4-O add file io seam`, worktree `/home/ubuntu/dallo-worktrees/w4o-validator-file-io-seam` / 브랜치 `w4o-validator-file-io-seam` 에서 단일 구현 커밋으로 추가 후 local main 머지)
 - 주요 파일/영역:
   - `validator/file_io.py` (신규 — validator 측 파일 쓰기 어댑터)
   - `validator/test_runner.py`
@@ -1114,7 +1114,10 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - Worktree post-implementation targeted: ``tests/test_validator_file_io_seam.py`` → **30 passed in 0.08s**.
   - Worktree broader targeted: ``tests/test_validator_file_io_seam.py`` ``tests/test_validator_sandbox_hardening.py`` ``tests/test_security_checker.py`` ``tests/test_syntax_checker.py`` ``tests/test_validator_command_runner_adapter.py`` ``tests/test_bandit_file_io_seam.py`` ``tests/test_semgrep_file_io_seam.py`` → **129 passed in 0.44s**.
   - Worktree full: ``pytest tests/ -q`` → **765 passed, 5 warnings in 36.08s** (Wave 4-N 시점 735 → +30 신규 회귀 테스트).
-  - Worktree security/schema scans: 변경 diff 에 secret-like 값 부재, 신규 추가 라인에서 ``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``pickle.loads`` / ``subprocess.run`` 직접 호출 부재, ``shared/schemas.py`` diff 0. 직접 ``open(..., 'w')`` / ``.write(...)`` / ``NamedTemporaryFile`` 호출은 의도대로 ``validator/file_io.py`` 에만 존재.
+  - Final main targeted (post-merge): ``tests/test_validator_file_io_seam.py -q`` → **30 passed in 0.11s**.
+  - Final main full (post-merge): ``pytest tests/ -q`` → **765 passed, 5 warnings in 34.92s**.
+  - Final main fake seam smoke: ``WAVE4O_MAIN_FAKE_SMOKE_PASS injected_file_io_used no_real_flake8_bandit_semgrep`` (주입된 ``FileIO`` 가 사용되었고, 실 flake8 / 실 Bandit / 실 Semgrep 호출은 발생하지 않음을 main 에서 재확인).
+  - Final security/scope scans clean: 변경 diff 에 secret-like 값 부재, 신규 추가 라인에서 ``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``pickle.loads`` / ``subprocess.run`` 직접 호출 부재, ``shared/schemas.py`` diff 0. 직접 validator 측 파일 쓰기 경계는 설계대로 ``validator/file_io.py`` 에만 존재.
   - 실 외부 호출 0건. push / PR / deploy / production DB / 실 외부 Dallo 호출 / 실 flake8 / 실 pytest sandbox / 실 Bandit/Semgrep / network 호출 모두 수행되지 않았다.
 - 명시적 비적용 (의도적 비행동):
   - DB clock/deprecation 정리 비적용 (Wave 4-P 후보 범위, ``db/models.py`` / ``db/service.py`` / ``api/services/*`` datetime 정책 무변경).
@@ -1124,7 +1127,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - subprocess/env 정책 변경 없음.
   - API / frontend / schema 계약 변경 없음.
   - push / PR / deploy / production DB / external service 호출 없음 (정책 유지).
-- Rollback: `git revert -m 1 <merge-sha>` (구현 커밋만 되돌릴 경우 `git revert <impl-sha>`). 되돌리면 validator 측 file write seam 회귀 가드는 사라지지만, 운영 시 세 모듈이 stdlib ``open`` / ``NamedTemporaryFile`` 을 직접 호출하던 상태로 돌아가 동작 자체는 동일하다. 호출자는 두 모드 모두에서 호환된다.
+- Rollback: `git revert -m 1 157a30d` (구현 커밋만 되돌릴 경우 `git revert 1cfcbcd`). 되돌리면 validator 측 file write seam 회귀 가드는 사라지지만, 운영 시 세 모듈이 stdlib ``open`` / ``NamedTemporaryFile`` 을 직접 호출하던 상태로 돌아가 동작 자체는 동일하다. 호출자는 두 모드 모두에서 호환된다.
 - 초보자용 설명: "validator 의 세 모듈은 LLM 이 생성한 수정 코드를 검증하기 위해 ‘sandbox 디렉토리 안의 타깃 파일에 코드를 쓴다’ (TestRunner), ‘재검증용 fixed/original 임시 파일에 코드를 쓴다’ (SecurityChecker), ‘flake8 에 넘길 .py 임시 파일에 코드를 쓴다’ (SyntaxChecker) 라는 세 종류의 파일 쓰기를 직접 stdlib ``open`` / ``NamedTemporaryFile`` 로 처리해 왔다. Wave 4-O 는 그 세 쓰기 동작만 ``validator/file_io.py`` 라는 작은 어댑터로 모았다. 세 클래스는 평소에는 그 어댑터의 기본 인스턴스를 lazy 하게 받아 그대로 쓰지만(즉 운영 동작은 한 줄도 바뀌지 않음), 테스트는 ``TestRunner(file_io=fake)`` 처럼 가짜 ``FileIO`` 를 끼워넣어 실제 디스크에 쓰지 않고도 ‘정확히 어떤 경로/내용이 들어갔는가’ 를 즉시 검증할 수 있다. analyzer 측 파일 I/O seam (Wave 4-N) 과 같은 패턴이지만 의존 방향 격리를 위해 validator 전용 어댑터를 따로 두었다."
 
 ---
@@ -1175,14 +1178,15 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ## 10. 현재 상태 (Wave 4-O 시점)
 
-- 로컬 `main` 에 Wave 4-N 머지 커밋 `660c810` 까지 포함되었다 (Wave 4-N 구현 커밋 `36627f7`, 그 직전 Wave 4-M 머지 커밋 `b842b21` / Wave 4-M 구현 커밋 `0d1a39e`).
-  - Wave 4-O 는 Wave 4-N 머지 후의 docs 동기화 커밋(`718ee19`) 위에 단일 구현 커밋으로 worktree `/home/ubuntu/dallo-worktrees/w4o-validator-file-io-seam` (브랜치 `w4o-validator-file-io-seam`) 에서 추가되었으며, 본 worktree 머지 커밋은 아직 생성되지 않은 상태다 (Hermes local merge 대기 중). push / PR / deploy 는 수행되지 않았다 (정책 유지).
+- 로컬 `main` 에 Wave 4-O 머지 커밋 `157a30d` 까지 포함되었다 (Wave 4-O 구현 커밋 `1cfcbcd`, 그 직전 Wave 4-N 머지 커밋 `660c810` / Wave 4-N 구현 커밋 `36627f7`, 그 직전 Wave 4-M 머지 커밋 `b842b21` / Wave 4-M 구현 커밋 `0d1a39e`).
+  - Wave 4-O 는 Wave 4-N 머지 후의 docs 동기화 커밋(`718ee19`) 위에 단일 구현 커밋(`1cfcbcd`) 으로 worktree `/home/ubuntu/dallo-worktrees/w4o-validator-file-io-seam` (브랜치 `w4o-validator-file-io-seam`) 에서 추가된 뒤, local main 으로 머지(`157a30d`) 되어 검증까지 완료되었다. push / PR / deploy 는 수행되지 않았다 (정책 유지).
 - 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출도 수행되지 않았다.
-- 마지막 검증된 targeted 테스트 결과 (worktree pre-merge): `tests/test_validator_file_io_seam.py` → **30 passed in 0.08s**.
-  - 마지막 검증된 broader targeted 테스트 결과 (worktree pre-merge): ``tests/test_validator_file_io_seam.py`` ``tests/test_validator_sandbox_hardening.py`` ``tests/test_security_checker.py`` ``tests/test_syntax_checker.py`` ``tests/test_validator_command_runner_adapter.py`` ``tests/test_bandit_file_io_seam.py`` ``tests/test_semgrep_file_io_seam.py`` → **129 passed in 0.44s**.
-  - 마지막 검증된 full 테스트 결과 (worktree pre-merge): ``pytest tests/ -q`` → **765 passed, 5 warnings in 36.08s**. Wave 4-N 시점 735 → +30 신규 회귀 테스트 (``tests/test_validator_file_io_seam.py``). 5 warnings 는 Wave 4-J/4-K/4-L/4-M/4-N 과 동일한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로, 본 wave 의 blocker 가 아니다.
-- Worktree 보안 스캔: 변경 diff 의 secret-like 값 0건, 신규 추가 라인 dangerous 호출(``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``pickle.loads`` / ``subprocess.run`` 직접) 0건, ``shared/schemas.py`` diff 0. 직접 ``open(..., 'w')`` / ``.write(...)`` / ``NamedTemporaryFile`` 호출은 의도대로 ``validator/file_io.py`` 에만 존재 (정적 가드 회귀 테스트가 양방향으로 보장). 본 wave 는 외부 동작 / 정책 변경이 없고 세 validator 클래스 생성자에 keyword-only ``file_io`` 자리를 추가하고 sandbox/임시 쓰기를 ``self._file_io`` 로 통과시킨 변경만 다룬다. ``shared/schemas.py`` / ``shared/command_env.py`` / ``analyzer/file_io.py`` / API / frontend 변경 없음.
-- Rollback: `git revert -m 1 <merge-sha>` (구현 커밋만 되돌릴 경우 `git revert <impl-sha>`). 머지 후 갱신 예정.
+- 마지막 검증된 targeted 테스트 결과 (post-merge main): `tests/test_validator_file_io_seam.py -q` → **30 passed in 0.11s**.
+  - 마지막 검증된 full 테스트 결과 (post-merge main): ``pytest tests/ -q`` → **765 passed, 5 warnings in 34.92s**. Wave 4-N 시점 735 → +30 신규 회귀 테스트 (``tests/test_validator_file_io_seam.py``). 5 warnings 는 Wave 4-J/4-K/4-L/4-M/4-N 과 동일한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로, 본 wave 의 blocker 가 아니다.
+  - Post-merge fake seam smoke: ``WAVE4O_MAIN_FAKE_SMOKE_PASS injected_file_io_used no_real_flake8_bandit_semgrep`` — main 에서 주입된 ``FileIO`` 가 실제로 사용되며 실 flake8 / 실 Bandit / 실 Semgrep 호출이 발생하지 않음을 재확인.
+- Final 보안/scope 스캔 clean: 변경 diff 의 secret-like 값 0건, 신규 추가 라인 dangerous 호출(``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``pickle.loads`` / ``subprocess.run`` 직접) 0건, ``shared/schemas.py`` 무변경. 직접 validator 측 파일 쓰기 경계는 설계대로 ``validator/file_io.py`` 에만 존재 (정적 가드 회귀 테스트가 양방향으로 보장). 본 wave 는 외부 동작 / 정책 변경이 없고 세 validator 클래스 생성자에 keyword-only ``file_io`` 자리를 추가하고 sandbox/임시 쓰기를 ``self._file_io`` 로 통과시킨 변경만 다룬다. ``shared/schemas.py`` / ``shared/command_env.py`` / ``analyzer/file_io.py`` / API / frontend 변경 없음.
+- Rollback: `git revert -m 1 157a30d` (구현 커밋만 되돌릴 경우 `git revert 1cfcbcd`).
+- Rationale: `/tmp/dallo-wave4o-clean-architecture-rationale.md`. Approval log: `/tmp/dallo-approval-log-wave4o.md`.
 - 다음 권장 작업 후보 (어느 것도 아직 승인된 wave 가 아님 — 후보 단계):
   - **Wave 4-P (후보)** DB clock seam: DB 서비스 계층의 시계 의존(``datetime.now`` / ``utcnow``) 을 sleeper-adapter 와 동일 패턴으로 fakeable 화.
   - **Wave 4-Q (후보)** dormant GitHub client HTTP seam: 휴면 상태인 ``integrations/github_client.py`` 의 HTTP 경계를 ``github_pr_comment_adapter`` 와 동일한 어댑터 패턴으로 정리할지 검토.
