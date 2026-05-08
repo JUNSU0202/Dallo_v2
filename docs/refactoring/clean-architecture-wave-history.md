@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-O 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-P 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -33,7 +33,7 @@ Dallo 의 리팩터링은 **세 단계의 큰 흐름** 으로 진행되었다.
 | --- | --- | --- | --- |
 | **Wave 2 (A~S, 19 wave)** | API/라우터/서비스/부트스트랩/경로 안정화 | 단일 파일에 뭉친 책임을 라우터·서비스 계층으로 분리, 부트스트랩 부수효과 정리, 경로 안전성 강화 | `api/server.py` 거대 파일을 라우터/서비스 단위로 분해 |
 | **Wave 3 (A~J, 11 wave)** | analyzer/외부 의존 경계 추출 | subprocess·HTTP·시간 의존성을 어댑터(seam)로 분리, fakeable 테스트 가능한 구조로 전환 | `pip-audit`, Bandit, Semgrep, Sonar scanner, Sonar HTTP, polling clock 까지 모두 외부 경계 격리 |
-| **Wave 4 (A~O, 15 wave)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam + agent LLM retry sleeper seam + analyzer 파일 I/O seam + validator 파일 쓰기 seam | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam, ``DalloAgent`` LLM retry sleeper DI seam, ``BanditRunner``/``SemgrepRunner`` 파일 I/O 어댑터, ``TestRunner``/``SecurityChecker``/``SyntaxChecker`` 파일 쓰기 어댑터 | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 + LLM retry 시계 경계 fakeable 화 + analyzer/validator 파일 시스템 경계 fakeable 화 |
+| **Wave 4 (A~P, 16 wave)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam + agent LLM retry sleeper seam + analyzer/validator 파일 I/O seam + DB clock seam | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam, ``DalloAgent`` LLM retry sleeper DI seam, ``BanditRunner``/``SemgrepRunner`` 파일 I/O 어댑터, ``TestRunner``/``SecurityChecker``/``SyntaxChecker`` 파일 쓰기 어댑터, DB ``DateTime`` default clock seam | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 + LLM retry 시계 경계 fakeable 화 + analyzer/validator 파일 시스템 경계 fakeable 화 + DB 시간 생성 경계 fakeable/deprecation-free 화 |
 
 핵심 원칙은 다음 네 가지다.
 
@@ -228,6 +228,7 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-M | `b842b21` | LLM agent retry sleeper seam | `agent/llm_agent.py`, `tests/test_llm_agent_sleeper_adapter.py` | retry-loop ``time.sleep`` 경계를 DI 로 fakeable 화하고 운영 기본값(``time.sleep``) 보존 |
 | 4-N | `660c810` | Bandit/Semgrep 파일 I/O seam | `analyzer/file_io.py`, `analyzer/bandit_runner.py`, `analyzer/semgrep_runner.py`, `tests/test_bandit_file_io_seam.py`, `tests/test_semgrep_file_io_seam.py` | 결과 JSON 쓰기 + Semgrep snippet 원본 라인 읽기 경계를 ``FileIO`` 어댑터로 위임, keyword-only DI |
 | 4-O | `157a30d` (구현 `1cfcbcd`) | Validator 파일 쓰기 seam | `validator/file_io.py`, `validator/test_runner.py`, `validator/security_checker.py`, `validator/syntax_checker.py`, `tests/test_validator_file_io_seam.py` | sandbox 타깃 / 보안 재검증 임시 / flake8 임시 ``.py`` 쓰기 경계를 validator-local ``FileIO`` 어댑터로 위임, keyword-only DI |
+| 4-P | `d8bf187` (구현 `560a605`) | DB clock/deprecation seam | `db/clock.py`, `db/models.py`, `tests/test_db_clock_seam.py` | SQLAlchemy ``DateTime`` default 의 deprecated ``datetime.utcnow`` 직접 참조를 fakeable ``db.clock.now`` seam 으로 교체, naive UTC shape 보존 |
 
 ---
 
@@ -1130,11 +1131,55 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - Rollback: `git revert -m 1 157a30d` (구현 커밋만 되돌릴 경우 `git revert 1cfcbcd`). 되돌리면 validator 측 file write seam 회귀 가드는 사라지지만, 운영 시 세 모듈이 stdlib ``open`` / ``NamedTemporaryFile`` 을 직접 호출하던 상태로 돌아가 동작 자체는 동일하다. 호출자는 두 모드 모두에서 호환된다.
 - 초보자용 설명: "validator 의 세 모듈은 LLM 이 생성한 수정 코드를 검증하기 위해 ‘sandbox 디렉토리 안의 타깃 파일에 코드를 쓴다’ (TestRunner), ‘재검증용 fixed/original 임시 파일에 코드를 쓴다’ (SecurityChecker), ‘flake8 에 넘길 .py 임시 파일에 코드를 쓴다’ (SyntaxChecker) 라는 세 종류의 파일 쓰기를 직접 stdlib ``open`` / ``NamedTemporaryFile`` 로 처리해 왔다. Wave 4-O 는 그 세 쓰기 동작만 ``validator/file_io.py`` 라는 작은 어댑터로 모았다. 세 클래스는 평소에는 그 어댑터의 기본 인스턴스를 lazy 하게 받아 그대로 쓰지만(즉 운영 동작은 한 줄도 바뀌지 않음), 테스트는 ``TestRunner(file_io=fake)`` 처럼 가짜 ``FileIO`` 를 끼워넣어 실제 디스크에 쓰지 않고도 ‘정확히 어떤 경로/내용이 들어갔는가’ 를 즉시 검증할 수 있다. analyzer 측 파일 I/O seam (Wave 4-N) 과 같은 패턴이지만 의존 방향 격리를 위해 validator 전용 어댑터를 따로 두었다."
 
+### Wave 4-P — DB clock/deprecation seam
+
+- 머지 커밋: `d8bf187` (`merge: integrate Wave 4-P db clock seam`)
+- 구현 커밋: `560a605` (`refactor(db): Wave 4-P add clock seam`, worktree `/home/ubuntu/dallo-worktrees/w4p-db-clock-seam` / 브랜치 `w4p-db-clock-seam` 에서 단일 구현 커밋으로 추가 후 local main 머지)
+- 주요 파일/영역:
+  - `db/clock.py` (신규 — DB clock seam)
+  - `db/models.py`
+  - `tests/test_db_clock_seam.py` (신규 회귀 테스트, 5개)
+- 이전 구조: `AnalysisRun.started_at`, `Vulnerability.detected_at`, `Patch.created_at` 세 SQLAlchemy `DateTime` 컬럼의 Python-side default 가 `datetime.utcnow` 를 직접 참조했다. Python 3.12+ 에서는 이 호출이 deprecated 되어 INSERT 시점마다 `DeprecationWarning` 을 만들 수 있었고, DB 모델이 시간 boundary 를 직접 붙잡고 있어 테스트에서 자동 생성 시각을 고정하기 어려웠다.
+- 문제/위험:
+  - **엄격 warning 모드 취약성**: `datetime.utcnow()` deprecation warning 은 기능 실패는 아니지만, `-W error::DeprecationWarning` 모드나 CI warning budget 에서 회귀 원인이 된다.
+  - **시간 boundary 의 모델 침투**: DB 모델이 stdlib wall-clock 호출을 직접 참조하면 “현재 시각을 만든다” 는 외부 세계 의존이 모델 정의에 박힌다.
+  - **테스트 결정성 부족**: 자동 생성되는 `started_at` / `detected_at` / `created_at` 값을 fake clock 으로 고정할 seam 이 없었다.
+- 변경:
+  - 신규 `db/clock.py` 를 도입했다. `utcnow_naive()` 는 `datetime.now(timezone.utc).replace(tzinfo=None)` 경로로 naive UTC datetime 을 반환해 `datetime.utcnow()` deprecation warning 을 피하면서 기존 `DateTime` 저장 shape 를 보존한다.
+  - `clock.now()` 는 module-level `_clock` callable 에 위임한다. 기본값은 `utcnow_naive` 이며, 테스트는 `set_clock(fn)` / `reset_clock()` 로 시간을 고정하고 복구할 수 있다.
+  - `db/models.py` 의 세 컬럼 default 만 `default=datetime.utcnow` 에서 `default=clock.now` 로 교체했다. `Column(DateTime, ...)` 타입, nullable, 관계, 테이블/컬럼 이름, migration 은 바꾸지 않았다.
+  - 신규 `tests/test_db_clock_seam.py` 는 `save_analysis()` 경로에서 `utcnow` deprecation warning 이 사라졌는지, fake clock 주입 시 세 컬럼이 같은 고정 시각을 받는지, `clock.utcnow_naive()` / `clock.now()` 가 naive datetime 과 `isoformat()` shape 를 보존하는지 검증한다.
+- 클린 아키텍처 적합성: 시간은 외부 세계와 닿는 boundary 다. Wave 4-P 는 DB 모델이 deprecated wall-clock 함수를 직접 붙잡던 구조를 `db.clock` seam 으로 모았다. 운영 기본값은 그대로 “현재 UTC 시각을 naive datetime 으로 저장” 하지만, 테스트는 fake clock 을 주입해 결정적으로 검증할 수 있다. 이는 Wave 3-J 의 Sonar polling clock/sleeper, Wave 4-M 의 LLM retry sleeper, Wave 4-N/4-O 의 파일 I/O seam 과 같은 “외부 세계 boundary 를 작고 명시적인 어댑터/seam 으로 분리” 패턴이다.
+- 보존된 동작:
+  - `AnalysisRun.started_at`, `Vulnerability.detected_at`, `Patch.created_at` 컬럼은 여전히 SQLAlchemy `DateTime` 이며 naive datetime 을 저장한다.
+  - `isoformat()` 결과에 `+00:00` 또는 `Z` suffix 가 붙지 않는 기존 API 직렬화 shape 를 보존한다.
+  - `save_analysis()` 입력/출력, API contract, 인증, 응답 key, `shared/schemas.py` 모두 변경 없음.
+  - DB schema/table/column/type/relationship/migration 변경 없음.
+  - `api/`, `analyzer/`, `agent/`, `validator/` 변경 없음.
+- 검증 근거:
+  - Baseline before code change: `pytest tests/ -q` → **765 passed, 5 warnings**. 타깃 경고는 SQLAlchemy-triggered `datetime.utcnow()` deprecation warning.
+  - Worktree pre-implementation RED: 신규 테스트가 `ImportError: cannot import name 'clock' from 'db'` 로 collection 실패 — `db/clock.py` 부재를 회귀 가드로 고정.
+  - Worktree targeted: `tests/test_db_clock_seam.py -q` → **5 passed**, `tests/test_api_contract.py -q -W error::DeprecationWarning` → **16 passed**, combined targeted → **21 passed**.
+  - Worktree full: `pytest tests/ -q` → **770 passed, 1 warning**. 남은 1 warning 은 기존 `tests/test_auth.py` 의 `asyncio.get_event_loop` deprecation 으로 본 wave 와 무관.
+  - Worktree static/security/scope: `db/` 에 `datetime.utcnow()` / `default=datetime.utcnow` 재도입 없음, `bandit -q -r db -x test_targets,tests` 및 `semgrep --config auto --quiet db tests/test_db_clock_seam.py` 새 이슈 없음, `shared/schemas.py` / `api` / `analyzer` / `agent` / `validator` diff 0.
+  - Independent read-only review: **PASS_WITH_NOTES**, blocker/major 없음. Minor note 는 테스트가 local SQLite 에 synthetic row 를 쓰고 cleanup 하므로 중단 시 잔여 row 가능성이 있다는 점이었고, 실제 post-test residual query 는 `clock_seam_%` row 0개.
+  - Final main targeted (post-merge): `tests/test_db_clock_seam.py tests/test_api_contract.py -q` → **21 passed in 2.89s**.
+  - Final main full (post-merge): `pytest tests/ -q` → **770 passed, 1 warning in 33.53s**.
+  - 실 외부 호출 0건. push / PR / deploy / production DB / 실 외부 Dallo 호출 / network 호출 모두 수행되지 않았다.
+- 명시적 비적용 (의도적 비행동):
+  - `db/service.py` 의 날짜 parsing/serialization 정책 변경 없음.
+  - timezone-aware DB 저장 전환 비적용 — naive UTC shape 보존이 이번 wave 의 핵심 계약이다.
+  - DB migration / schema 변경 비적용.
+  - API / frontend / schema 계약 변경 비적용.
+  - dormant `integrations/github_client.py` HTTP seam 비적용 (Wave 4-Q 후보 범위).
+- Rollback: `git revert -m 1 d8bf187` (구현 커밋만 되돌릴 경우 `git revert 560a605`). 되돌리면 clock seam 과 신규 회귀 테스트는 사라지고 세 컬럼 default 는 `datetime.utcnow` 직접 참조로 돌아간다. 운영 저장 shape 는 rollback 전후 모두 naive datetime 이지만 Python 3.12+ deprecation warning 은 다시 발생할 수 있다.
+- 초보자용 설명: "DB 에 분석 기록을 저장할 때 ‘시간을 안 주면 지금 시간을 넣어줘’ 라는 기본값이 있다. 예전 코드는 그 기본값을 만들 때 `datetime.utcnow()` 라는 낡아가는 함수를 직접 불렀다. Wave 4-P 는 그 호출을 `db/clock.py` 라는 작은 시계 모듈로 옮겼다. 평소에는 똑같이 현재 UTC 시간을 만들지만, 테스트에서는 ‘지금은 2024-01-02 03:04:05 라고 치자’ 같은 가짜 시계를 끼워 넣을 수 있다. 그래서 시간 때문에 테스트가 흔들리지 않고, Python 이 `utcnow 는 이제 쓰지 마` 라고 경고하는 문제도 사라진다. 중요한 점은 DB/API 가 보여주는 시간 모양은 그대로라는 것 — timezone 표시 `+00:00` 을 새로 붙이지 않고 기존 naive datetime 모양을 지킨다."
+
 ---
 
 ## 9. 보안 강화 관점 요약
 
-이 절은 Wave 2-S → Wave 4-O 를 보안 관점으로 다시 본다.
+이 절은 Wave 2-S → Wave 4-P 를 보안 관점으로 다시 본다.
 
 ### 9.1 무엇이 줄어들었나
 
@@ -1163,6 +1208,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - Wave 4-M 이후로는 ``DalloAgent`` 의 retry 대기(``self._sleeper``) 까지 fake 로 교체 가능해, 단위 테스트가 “rate-limit 에 걸려서 3 초 기다리고 재시도한다” 같은 시나리오를 실제 wall-clock 대기 없이 즉시 검증한다. 즉 fake seam 의 적용 범위가 외부 명령/HTTP 에서 *시계 경계(time boundary)* 까지 확장되어, 테스트가 진짜 Gemini/OpenRouter 호출이나 실제 ``time.sleep`` 부수효과를 일으킬 가능성도 0 에 가깝게 줄어들었다.
 - Wave 4-N 이후로는 ``BanditRunner`` / ``SemgrepRunner`` 의 결과 파일 쓰기와 Semgrep snippet 원본 라인 읽기까지 fake ``FileIO`` 로 교체 가능해, 단위 테스트가 “결과 JSON 이 정확한 경로/포맷으로 쓰일까”, “snippet 윈도우가 어떻게 잡힐까” 를 실제 디스크 부수효과 없이 즉시 검증한다. 즉 fake seam 의 적용 범위가 *파일 시스템 경계(file-system boundary)* 까지 확장되어, 테스트가 실제 파일 쓰기/읽기로 인한 부수효과(임시 파일 잔류, OS 별 줄바꿈/인코딩 차이) 를 일으킬 가능성도 0 에 가깝게 줄어들었다.
 - Wave 4-O 이후로는 validator 측 (``TestRunner`` sandbox 타깃 쓰기, ``SecurityChecker`` fixed/original 임시 쓰기, ``SyntaxChecker`` flake8 ``.py`` 임시 쓰기) 까지 같은 패턴으로 fake ``FileIO`` 교체가 가능해, LLM 이 생성한 코드가 sandbox-내부 경로로만 들어가는지 / 보안 재검증 임시 파일이 정확한 이름·내용으로 만들어지는지 / flake8 임시 파일이 정확한 suffix·content 로 쓰이는지를 실제 디스크 쓰기 없이 즉시 검증한다. analyzer/validator 양쪽 모두에 “파일 시스템 어댑터” 패턴이 균일하게 적용된 셈이다 (validator 측 어댑터는 의존 방향 격리를 위해 ``analyzer/file_io.py`` 와 별도로 ``validator/file_io.py`` 에 둔다).
+- Wave 4-P 이후로는 DB 모델의 세 ``DateTime`` default 도 fakeable ``db.clock.now`` 를 통과한다. 따라서 ``datetime.utcnow`` deprecation warning 없이 naive UTC shape 를 보존하면서도, 테스트에서는 `set_clock()` 으로 ``started_at`` / ``detected_at`` / ``created_at`` 자동 생성 시각을 결정적으로 고정할 수 있다.
 - 이 구조 덕분에 “테스트가 비밀을 흘리거나 외부에 부수효과를 일으킬 가능성” 자체가 거의 0 이 된다.
 
 ### 9.4 GitHub push 를 미루고 있는 이유 (의도된 비행동)
@@ -1176,20 +1222,20 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-## 10. 현재 상태 (Wave 4-O 시점)
+## 10. 현재 상태 (Wave 4-P 시점)
 
-- 로컬 `main` 에 Wave 4-O 머지 커밋 `157a30d` 까지 포함되었다 (Wave 4-O 구현 커밋 `1cfcbcd`, 그 직전 Wave 4-N 머지 커밋 `660c810` / Wave 4-N 구현 커밋 `36627f7`, 그 직전 Wave 4-M 머지 커밋 `b842b21` / Wave 4-M 구현 커밋 `0d1a39e`).
-  - Wave 4-O 는 Wave 4-N 머지 후의 docs 동기화 커밋(`718ee19`) 위에 단일 구현 커밋(`1cfcbcd`) 으로 worktree `/home/ubuntu/dallo-worktrees/w4o-validator-file-io-seam` (브랜치 `w4o-validator-file-io-seam`) 에서 추가된 뒤, local main 으로 머지(`157a30d`) 되어 검증까지 완료되었다. push / PR / deploy 는 수행되지 않았다 (정책 유지).
+- 로컬 `main` 에 Wave 4-P 머지 커밋 `d8bf187` 까지 포함되었다 (Wave 4-P 구현 커밋 `560a605`, 그 직전 Wave 4-O 머지 커밋 `157a30d` / Wave 4-O 구현 커밋 `1cfcbcd`).
+  - Wave 4-P 는 Wave 4-O docs 동기화 커밋(`931807e`) 위에 단일 구현 커밋(`560a605`) 으로 worktree `/home/ubuntu/dallo-worktrees/w4p-db-clock-seam` (브랜치 `w4p-db-clock-seam`) 에서 추가된 뒤, local main 으로 머지(`d8bf187`) 되어 검증까지 완료되었다. push / PR / deploy 는 수행되지 않았다 (정책 유지).
 - 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출도 수행되지 않았다.
-- 마지막 검증된 targeted 테스트 결과 (post-merge main): `tests/test_validator_file_io_seam.py -q` → **30 passed in 0.11s**.
-  - 마지막 검증된 full 테스트 결과 (post-merge main): ``pytest tests/ -q`` → **765 passed, 5 warnings in 34.92s**. Wave 4-N 시점 735 → +30 신규 회귀 테스트 (``tests/test_validator_file_io_seam.py``). 5 warnings 는 Wave 4-J/4-K/4-L/4-M/4-N 과 동일한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로, 본 wave 의 blocker 가 아니다.
-  - Post-merge fake seam smoke: ``WAVE4O_MAIN_FAKE_SMOKE_PASS injected_file_io_used no_real_flake8_bandit_semgrep`` — main 에서 주입된 ``FileIO`` 가 실제로 사용되며 실 flake8 / 실 Bandit / 실 Semgrep 호출이 발생하지 않음을 재확인.
-- Final 보안/scope 스캔 clean: 변경 diff 의 secret-like 값 0건, 신규 추가 라인 dangerous 호출(``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``pickle.loads`` / ``subprocess.run`` 직접) 0건, ``shared/schemas.py`` 무변경. 직접 validator 측 파일 쓰기 경계는 설계대로 ``validator/file_io.py`` 에만 존재 (정적 가드 회귀 테스트가 양방향으로 보장). 본 wave 는 외부 동작 / 정책 변경이 없고 세 validator 클래스 생성자에 keyword-only ``file_io`` 자리를 추가하고 sandbox/임시 쓰기를 ``self._file_io`` 로 통과시킨 변경만 다룬다. ``shared/schemas.py`` / ``shared/command_env.py`` / ``analyzer/file_io.py`` / API / frontend 변경 없음.
-- Rollback: `git revert -m 1 157a30d` (구현 커밋만 되돌릴 경우 `git revert 1cfcbcd`).
-- Rationale: `/tmp/dallo-wave4o-clean-architecture-rationale.md`. Approval log: `/tmp/dallo-approval-log-wave4o.md`.
+- 마지막 검증된 targeted 테스트 결과 (post-merge main): `tests/test_db_clock_seam.py tests/test_api_contract.py -q` → **21 passed in 2.89s**.
+  - 마지막 검증된 full 테스트 결과 (post-merge main): ``pytest tests/ -q`` → **770 passed, 1 warning in 33.53s**. Wave 4-O 시점 765 → +5 신규 회귀 테스트 (``tests/test_db_clock_seam.py``). 남은 1 warning 은 기존 `tests/test_auth.py` 의 `asyncio.get_event_loop` deprecation 으로 본 wave 의 blocker 가 아니다. 기존 SQLAlchemy ``datetime.utcnow`` deprecation warning 은 Wave 4-P 대상 경로에서 제거되었다.
+  - Post-merge smoke: `clock.now().tzinfo is None`, 세 대상 SQLAlchemy defaults 가 module `db.clock`, function name `now` 로 연결됨을 확인.
+- Final 보안/scope 스캔 clean: 변경 diff 는 `db/clock.py`, `db/models.py`, `tests/test_db_clock_seam.py` 로 제한. `shared/schemas.py` / `api` / `analyzer` / `agent` / `validator` diff 0. `db/` 에 `datetime.utcnow()` / `default=datetime.utcnow` 재도입 없음. `bandit` / `semgrep` 새 이슈 없음. 테스트 후 `clock_seam_%` 잔여 DB row 0개.
+- Rollback: `git revert -m 1 d8bf187` (구현 커밋만 되돌릴 경우 `git revert 560a605`).
+- Rationale: `/tmp/dallo-wave4p-clean-architecture-rationale.md`. Approval log: `/tmp/dallo-approval-log-wave4p.md`.
 - 다음 권장 작업 후보 (어느 것도 아직 승인된 wave 가 아님 — 후보 단계):
-  - **Wave 4-P (후보)** DB clock seam: DB 서비스 계층의 시계 의존(``datetime.now`` / ``utcnow``) 을 sleeper-adapter 와 동일 패턴으로 fakeable 화.
   - **Wave 4-Q (후보)** dormant GitHub client HTTP seam: 휴면 상태인 ``integrations/github_client.py`` 의 HTTP 경계를 ``github_pr_comment_adapter`` 와 동일한 어댑터 패턴으로 정리할지 검토.
+  - DB test isolation 후속 후보: `tests/test_db_clock_seam.py` 가 local SQLite 에 synthetic row 를 쓰고 cleanup 하는 구조를 `tmp_path`/in-memory 엔진 기반으로 더 격리할지 검토.
   - 사설 PyPI/npm 레지스트리 capability grant wave (필요해질 때): pip 의 `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL` 와 npm 의 `NPM_CONFIG_REGISTRY` + `_authToken` 을 명시적 `DependencyScanner` 생성자 인자 + `build_child_env(extras=...)` 패턴으로 도입.
   - Sandbox pytest 격리 강화: 별도 user 또는 chroot 등 OS 수준 격리 검토 (현재는 환경 변수 통제만 강화).
 
@@ -1218,4 +1264,4 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-*문서 버전: Wave 4-O 시점 (2026-05-08).*
+*문서 버전: Wave 4-P 시점 (2026-05-08).*
