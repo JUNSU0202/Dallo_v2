@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-M 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-N 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -993,11 +993,77 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - Rollback: `git revert -m 1 b842b21` (구현 커밋만 되돌릴 경우 `git revert 0d1a39e`). 되돌리면 sleeper-adapter 회귀 가드는 사라지지만, 운영 시 ``time.sleep`` 직접 호출로 돌아가 동작은 동일하다.
 - 초보자용 설명: "‘sleeper’ 라는 말이 어렵게 들리지만, 실은 단순히 ‘얼마 동안 기다리는 함수’ 다. 평소(운영) 에는 그 함수가 진짜 ``time.sleep`` 이라서 정말로 그 시간만큼 멈춘다. Wave 4-M 이전에는 이 ‘기다린다’ 라는 동작이 ``DalloAgent`` 함수 안에 직접 박혀 있어서, 단위 테스트가 ‘LLM rate-limit 에 걸리면 3 초 기다리고 다시 시도한다’ 를 검증하려면 진짜로 3 초를 기다리거나 전역 ``time.sleep`` 을 우회해야 했다. Wave 4-M 은 ``DalloAgent(sleeper=...)`` 라는 작은 ‘구멍’ 을 만들었다. 테스트는 그 자리에 ‘기다린 척하면서 받은 초 수를 리스트에 적기만 하는 가짜 함수’ 를 끼워넣는다. 그러면 retry 로직은 즉시 실행되고, 테스트는 ‘sleeper 가 [3] 초 받았는가’ 를 보면 끝난다. 사용자가 평소처럼 ``DalloAgent()`` 라고만 부르면 진짜 ``time.sleep`` 이 그대로 쓰이므로 운영 동작은 한 줄도 바뀌지 않는다. 즉 진짜 Gemini/OpenRouter 호출이나 실제 wall-clock 대기 없이 retry 동작이 빠르게, 결정적으로 검증된다."
 
+### Wave 4-N — Bandit/Semgrep file I/O seam
+
+- 머지 커밋: 660c810 merge: integrate Wave 4-N scanner file io seam
+- 구현 커밋: 36627f7 refactor(analyzer): Wave 4-N add scanner file io seam (브랜치 `w4n-file-io-seam` head, worktree `/home/ubuntu/dallo-worktrees/w4n-file-io-seam`)
+- 주요 파일/영역:
+  - `analyzer/bandit_runner.py`
+  - `analyzer/semgrep_runner.py`
+  - `analyzer/file_io.py` (신규 — 파일 I/O 어댑터)
+  - `tests/test_bandit_file_io_seam.py` (신규 회귀 테스트)
+  - `tests/test_semgrep_file_io_seam.py` (신규 회귀 테스트)
+- 이전 구조: ``BanditRunner`` / ``SemgrepRunner`` 는 외부 명령 실행(Wave 3-G 의 ``StaticToolCommandRunner``) 과 자식 env sanitize(Wave 4-F/4-G 의 ``build_child_env``) 까지는 어댑터/seam 으로 분리되어 있었지만, **결과 JSON 을 디스크에 쓰는 동작** (``output_path`` 가 주어졌을 때 ``open(output_path, "w").json.dump(...)``) 과 **Semgrep snippet enrichment 가 원본 소스 파일을 라인 단위로 읽는 동작** (``open(file_path, "r").readlines()``) 은 여전히 두 runner 본문에 stdlib ``open`` 호출로 박혀 있었다. 결과적으로 “결과 파일 경로가 주어지면 디스크에 정확한 페이로드/포맷으로 기록되는가”, “snippet enrichment 가 원본 파일을 어떤 식으로 읽는가” 같은 회귀 가드를 단위 테스트로 만들려면 임시 파일을 실제로 생성하고 후처리하는 식으로만 가능했고, 진짜 디스크 부수효과를 일으킬 위험이 있었다.
+- 문제/위험:
+  - **테스트 비결정성/디스크 부수효과**: 디스크 쓰기 검증은 ``tempfile`` 경로를 만들고, 테스트 종료 시 정리하고, OS 별 줄바꿈/인코딩 차이까지 흡수해야 한다. 또 snippet enrichment 의 라인 읽기는 fake 를 끼워넣을 자리가 없어 테스트가 실 파일을 만들거나 ``builtins.open`` 을 monkeypatch 해야 했다.
+  - **외부 자원 경계의 도메인 침투**: 두 runner 의 핵심 책임은 “외부 명령 실행 → JSON 파싱 → ``Vulnerability`` 매핑” 이다. 그러나 “결과를 디스크에 떨어뜨린다”, “원본 파일을 라인 단위로 읽는다” 라는 *별개* 의 외부 자원 경계가 같은 클래스 안에 함께 있어, runner 단위 테스트의 격리 비용이 과도했다.
+  - **monkeypatch 의존**: 전역 ``builtins.open`` 을 가로채는 방식은 같은 인터프리터의 다른 라이브러리에도 영향을 주며, 테스트 격리 측면에서 비대칭적이다.
+- 변경:
+  - 신규 ``analyzer/file_io.py`` 모듈을 도입. ``FileIO`` 클래스는 두 개의 메서드만 노출한다.
+    - ``write_json(path, payload)``: 부모 디렉토리 자동 생성(``os.makedirs(..., exist_ok=True)``) 후 UTF-8 텍스트로 ``json.dump(payload, f, indent=2, ensure_ascii=False)`` 를 그대로 호출. 즉 기존 두 runner 의 디스크 쓰기 옵션(들여쓰기 2, ``ensure_ascii=False``) 을 한 글자도 바꾸지 않는다.
+    - ``read_text_lines(path)``: UTF-8 텍스트로 ``f.readlines()`` 를 그대로 호출. 예외 swallowing 은 호출자(``SemgrepRunner._enrich_with_snippets``) 측에서 유지되며, 본 어댑터는 표준 파일 예외를 그대로 전파한다.
+    - 모듈 레벨 ``get_default_file_io()`` 가 단일 기본 ``FileIO`` 인스턴스를 lazy 하게 반환. 두 runner 가 ``file_io=None`` 으로 생성되어도 운영 경로는 그대로 stdlib 파일 I/O 를 사용한다.
+  - ``BanditRunner.__init__`` 과 ``SemgrepRunner.__init__`` 에 키워드-온리 ``file_io=None`` 의존성 주입 자리를 추가. 기본값은 ``None`` — 기존 ``BanditRunner()`` / ``SemgrepRunner(config="auto")`` 호출 형태는 그대로 유지.
+  - 두 runner 의 디스크 쓰기 호출 (``output_path`` 가 ``None`` 이 아닐 때) 을 ``self._file_io.write_json(output_path, payload)`` 로 교체. ``output_path is None`` 이면 기존처럼 디스크에 아무 것도 쓰지 않는다.
+  - ``SemgrepRunner._enrich_with_snippets`` (또는 동등 위치) 의 ``open(file_path, "r").readlines()`` 호출을 ``self._file_io.read_text_lines(file_path)`` 로 교체. snippet enrichment 의 조건/윈도우 계산/예외 swallowing 분기는 그대로.
+  - 두 runner 모두 ``self._file_io`` 를 lazy 하게 해석한다 — 인스턴스화 시 ``None`` 이면 ``get_default_file_io()`` 의 기본 인스턴스를 사용. 따라서 ``BanditRunner()`` / ``SemgrepRunner(config="auto")`` 인스턴스화만으로 디스크 부수효과는 발생하지 않는다.
+  - 신규 ``tests/test_bandit_file_io_seam.py`` 와 ``tests/test_semgrep_file_io_seam.py`` 를 추가:
+    - DI seam: 키워드-온리 ``file_io=...`` 인자 수용, 기본 생성자에서는 ``get_default_file_io()`` 가 돌려준 인스턴스가 lazy 하게 사용됨, 주입된 fake 만 호출되며 stdlib ``open`` 은 호출되지 않음 (트립와이어 monkeypatch).
+    - ``output_path`` 가 주어졌을 때 fake ``FileIO`` 의 ``write_json`` 이 정확한 경로/페이로드로 호출되고, 디스크에 실제 파일이 만들어지지 않음.
+    - ``output_path=None`` 이면 ``write_json`` 호출 자체가 일어나지 않는 “no-write” 동작 보존.
+    - Semgrep snippet enrichment: fake ``read_text_lines`` 가 돌려준 라인 리스트로 snippet 윈도우(앞/뒤 컨텍스트) 가 계산되고, 원본 stdlib ``open`` 은 호출되지 않음. 라인 읽기 예외(``OSError``/``UnicodeDecodeError`` 등) 는 호출자에서 swallow 되어 enrichment 가 실패해도 결과 매핑이 깨지지 않음.
+    - 정적 가드: 두 runner 본문에서 ``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``pickle.loads`` / ``subprocess.run`` 직접 호출 부재 회귀 가드. 그리고 ``open(``/``json.dump(``/``readlines`` 직접 호출은 오직 ``analyzer/file_io.py`` 에만 존재해야 한다는 추가 회귀 가드 (``analyzer/bandit_runner.py`` / ``analyzer/semgrep_runner.py`` 본문에는 없어야 함).
+- 클린 아키텍처 적합성: 외부 자원(파일 시스템) 경계를 도메인 어댑터로 분리한다. 이는 Wave 3-G (외부 명령 어댑터), Wave 4-F/4-G (자식 env sanitizer), Wave 4-L (security checker DI seam), Wave 4-M (sleeper seam) 과 동일한 형태로, 두 정적 분석 runner 에 처음으로 “파일 시스템 어댑터” 패턴을 적용한 wave 다. 결과적으로 ``BanditRunner`` / ``SemgrepRunner`` 는 “명령 실행 + 결과 파싱 + 매핑” 이라는 단일 책임에 더 가까워지고, 디스크 쓰기/원본 라인 읽기는 어느 쪽도 “이 외부 자원에 접근” 이라는 한 종류의 책임만 가진 ``FileIO`` 어댑터로 위임된다.
+- 보존된 동작:
+  - ``BanditRunner()`` / ``SemgrepRunner(config="auto")`` 기본 생성자 — 기존 호출자(``analyzer/pipeline.py``, ``validator/security_checker.py`` 의 lazy factory) 는 변경 없이 동작.
+  - ``run(file_path, output_path=None)`` 시그니처와 반환 타입 (``AnalysisResult``).
+  - ``output_path=None`` 일 때 디스크에 아무 것도 쓰지 않는 “no-write” 동작 보존.
+  - 부모 디렉토리 자동 생성 (``os.makedirs(..., exist_ok=True)`` 동등) 보존.
+  - JSON 직렬화 옵션: UTF-8, ``json.dump(..., indent=2, ensure_ascii=False)`` 한 글자도 바뀌지 않음.
+  - Semgrep snippet enrichment 의 조건(라인 정보 존재), 윈도우(앞/뒤 컨텍스트 라인 수), 예외 swallowing(파일 읽기 실패 시 enrichment 만 비고 결과는 그대로) 동작 보존.
+  - 외부 명령 실행 흐름(``StaticToolCommandRunner``), 결과 파서(``result_parser``) / ``Vulnerability`` 매핑 그대로.
+  - 한국어 메시지 (스캐너 실패/완료 로그 등) 변경 없음.
+  - 자식 env sanitizer (Wave 4-F/4-G 의 ``build_child_env``), allowlist/deny 정책 그대로.
+  - API 응답 모양과 ``shared/schemas.py`` 무변경 — 프런트엔드 계약/스키마 변화 0.
+- 검증 근거:
+  - Worktree targeted: ``tests/test_bandit_file_io_seam.py`` ``tests/test_semgrep_file_io_seam.py`` → **23 passed**.
+  - Worktree broader targeted: 두 신규 스위트 + 기존 bandit/semgrep/security_checker/pipeline 관련 회귀 → **95 passed**.
+  - Worktree full: ``pytest tests/ -q`` → **735 passed, 5 warnings**.
+  - Worktree fake smoke: ``WAVE4N_FAKE_SMOKE_PASS injected_file_io_used no_real_disk_write no_real_scanner`` — 주입된 fake ``FileIO`` 만 호출되고 실제 디스크 쓰기/실 스캐너 호출은 0건.
+  - Worktree security/schema scans: 변경 diff 에 secret-like 값 부재, 신규 추가 라인에서 ``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``pickle.loads`` / ``subprocess.run`` 직접 호출 부재, production AST dangerous pattern 부재, ``api.server`` 결합 부재, ``shared/schemas.py`` diff 0. 직접 ``open(`` / ``json.dump(`` / ``readlines`` 호출은 의도대로 ``analyzer/file_io.py`` 에만 존재.
+  - Independent read-only review: **APPROVED** (보고 스트림 ``/tmp/dallo-wave4n-review.stream.jsonl``) — scope-correct, behavior preserved, no regression concerns.
+  - Final main targeted (post-merge): **23 passed in 0.09s**.
+  - Final main broader targeted (post-merge): **95 passed in 1.86s**.
+  - Final main full (post-merge): ``pytest tests/ -q`` → **735 passed, 5 warnings in 33.60s** (Wave 4-M 시점 712 → +23 신규 회귀 테스트). 5 warnings 는 Wave 4-J/4-K/4-L/4-M 과 동일한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로, 본 wave 의 blocker 가 아니다.
+  - Final main fake smoke (post-merge): ``WAVE4N_MAIN_FAKE_SMOKE_PASS injected_file_io_used no_real_disk_write no_real_scanner``.
+  - Final main security/schema scans (post-merge): worktree 와 동일한 clean 결과; ``shared/schemas.py`` 무변경.
+  - 실 외부 호출 0건. push / PR / deploy / production DB / 실 외부 Dallo 호출 / 실 Bandit/Semgrep 실행 / network 호출 모두 수행되지 않았다.
+- 명시적 비적용 (의도적 비행동):
+  - validator 측 파일 쓰기 seam 도입 비적용 (Wave 4-O 후보 범위).
+  - DB clock/deprecation 정리 비적용 (Wave 4-P 후보 범위).
+  - dormant ``integrations/github_client.py`` HTTP seam 비적용 (Wave 4-Q 후보 범위).
+  - ``shared/schemas.py`` / ``shared/command_env.py`` 변경 없음.
+  - subprocess/env 정책 변경 없음 — Wave 4-D ~ 4-J 가 도입한 child env sanitizer / allowlist / deny / extras 정책 그대로.
+  - API / frontend / schema 계약 변경 없음.
+  - push / PR / deploy / production DB / external service 호출 없음 (정책 유지).
+- Rollback: `git revert -m 1 660c810` (구현 커밋만 되돌릴 경우 `git revert 36627f7`). 되돌리면 file I/O seam 회귀 가드는 사라지지만, 운영 시 두 runner 가 stdlib ``open`` / ``json.dump`` / ``readlines`` 를 직접 호출하던 상태로 돌아가 동작 자체는 동일하다. 호출자는 두 모드 모두에서 호환된다.
+- 초보자용 설명: "Bandit 과 Semgrep 두 분석기는 ‘외부 도구를 실행’ + ‘결과 JSON 을 받아서 파싱’ + ‘결과를 (옵션으로) 디스크에 떨어뜨린다’ + ‘Semgrep 은 라인 정보를 가지고 원본 소스의 그 줄 주변을 다시 읽어 snippet 을 붙인다’ 를 한 클래스 안에서 했다. 이 중 ‘디스크에 쓴다’, ‘파일을 라인 단위로 읽는다’ 는 사실 ‘파일 시스템’ 이라는 다른 외부 자원이다. Wave 4-N 은 ``FileIO`` 라는 작은 어댑터를 만들어 그 두 동작만 거기에 모았다. 두 runner 는 평소에는 그 어댑터의 기본 인스턴스를 lazy 하게 받아 그대로 쓰지만(즉 운영 동작은 그대로), 테스트는 ``BanditRunner(file_io=fake)`` / ``SemgrepRunner(config='auto', file_io=fake)`` 처럼 가짜 ``FileIO`` 를 끼워넣어 실제 디스크에 쓰거나 실제 파일을 읽지 않고도 ‘결과 파일이 정확한 경로/포맷으로 쓰일까’, ‘snippet 윈도우가 정확히 계산될까’ 를 즉시 검증한다. 사용자가 평소처럼 ``BanditRunner()`` / ``SemgrepRunner(config='auto')`` 라고만 부르면 진짜 디스크 I/O 가 그대로 쓰이므로, 운영 동작은 한 줄도 바뀌지 않는다."
+
 ---
 
 ## 9. 보안 강화 관점 요약
 
-이 절은 Wave 2-S → Wave 4-M 을 보안 관점으로 다시 본다.
+이 절은 Wave 2-S → Wave 4-N 을 보안 관점으로 다시 본다.
 
 ### 9.1 무엇이 줄어들었나
 
@@ -1024,6 +1090,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - 모든 외부 명령/HTTP 어댑터는 fake 로 교체 가능하다.
 - 따라서 테스트 실행은 실제 Bandit/Semgrep/Sonar/pip-audit/npm/flake8/sandbox pytest/GitHub API 를 호출하지 않는다.
 - Wave 4-M 이후로는 ``DalloAgent`` 의 retry 대기(``self._sleeper``) 까지 fake 로 교체 가능해, 단위 테스트가 “rate-limit 에 걸려서 3 초 기다리고 재시도한다” 같은 시나리오를 실제 wall-clock 대기 없이 즉시 검증한다. 즉 fake seam 의 적용 범위가 외부 명령/HTTP 에서 *시계 경계(time boundary)* 까지 확장되어, 테스트가 진짜 Gemini/OpenRouter 호출이나 실제 ``time.sleep`` 부수효과를 일으킬 가능성도 0 에 가깝게 줄어들었다.
+- Wave 4-N 이후로는 ``BanditRunner`` / ``SemgrepRunner`` 의 결과 파일 쓰기와 Semgrep snippet 원본 라인 읽기까지 fake ``FileIO`` 로 교체 가능해, 단위 테스트가 “결과 JSON 이 정확한 경로/포맷으로 쓰일까”, “snippet 윈도우가 어떻게 잡힐까” 를 실제 디스크 부수효과 없이 즉시 검증한다. 즉 fake seam 의 적용 범위가 *파일 시스템 경계(file-system boundary)* 까지 확장되어, 테스트가 실제 파일 쓰기/읽기로 인한 부수효과(임시 파일 잔류, OS 별 줄바꿈/인코딩 차이) 를 일으킬 가능성도 0 에 가깝게 줄어들었다.
 - 이 구조 덕분에 “테스트가 비밀을 흘리거나 외부에 부수효과를 일으킬 가능성” 자체가 거의 0 이 된다.
 
 ### 9.4 GitHub push 를 미루고 있는 이유 (의도된 비행동)
@@ -1037,19 +1104,19 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-## 10. 현재 상태 (Wave 4-M 시점)
+## 10. 현재 상태 (Wave 4-N 시점)
 
-- 로컬 `main` 에 Wave 4-M 머지 커밋 `b842b21` 까지 포함되었다 (Wave 4-M 구현 커밋 `0d1a39e`, 그 직전 Wave 4-L 머지 커밋 `875c3ac` / Wave 4-L 구현 커밋 `55b6731`).
-  - Wave 4-M 은 Wave 4-L 머지 후의 docs 동기화 커밋(`2706f76`) 위에 단일 구현 커밋 `0d1a39e` 으로 추가된 뒤, 머지 커밋 `b842b21` 으로 로컬 `main` 에 통합되었다. push / PR / deploy 는 수행되지 않았다 (정책 유지).
-- 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / network 호출도 수행되지 않았다.
-- 마지막 검증된 targeted 테스트 결과 (final main, post-merge): `tests/test_llm_agent_sleeper_adapter.py` `tests/test_llm_parser.py` → **23 passed in 21.02s** (worktree 시점 동일 스위트 23 passed in 20.69s — 동일 결과, timing 만 환경 차이).
-  - 마지막 검증된 full 테스트 결과 (final main, post-merge): ``pytest tests/ -q`` → **712 passed, 5 warnings in 32.99s**. Wave 4-L 시점 697 → +15 신규 회귀 테스트 (그 중 핵심은 ``tests/test_llm_agent_sleeper_adapter.py``). 5 warnings 는 Wave 4-J/4-K/4-L 과 동일한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로, 본 wave 의 blocker 가 아니다.
-- Post-merge fake smoke: ``WAVE4M_MAIN_FAKE_SMOKE_PASS fake_provider_used fake_sleeper_used no_real_llm sleep_values=[3] status=PatchStatus.GENERATED`` — 주입된 fake provider 와 fake sleeper 만 호출되고, 실제 LLM/Gemini/OpenRouter 호출과 실제 ``time.sleep`` 대기는 없으며, retry-delay 3 초가 sleeper 가 받은 값으로 정확히 누적되었다. (worktree 시점 동일 결과: ``WAVE4M_FAKE_SMOKE_PASS fake_provider_used fake_sleeper_used no_real_llm sleep_values=[3]``.)
-- 운영 보안 스캔 (post-merge): ``WAVE4M_MAIN_AST_SECURITY_SCAN_CLEAN`` (production AST dangerous pattern 0건), ``WAVE4M_MAIN_FORBIDDEN_TEXT_SCAN_CLEAN`` (금지 텍스트/secret-like 패턴 0건), ``WAVE4M_MAIN_SHARED_SCHEMAS_UNCHANGED`` (``shared/schemas.py`` diff 0). 본 wave 는 외부 동작 / 정책 변경이 없고 ``DalloAgent`` 생성자에 키워드-온리 ``sleeper`` 자리를 추가하고 retry 경로의 ``time.sleep(wait)`` 호출을 ``self._sleeper(wait)`` 로 통과시킨 변경만 다룬다. ``shared/schemas.py`` / ``shared/command_env.py`` / ``analyzer/bandit_runner.py`` / ``analyzer/semgrep_runner.py`` / API / frontend 변경 없음.
-- Independent review: APPROVED, scope-correct, behavior preserved, no regression concerns.
-- Rollback: `git revert -m 1 b842b21` (구현 커밋만 되돌릴 경우 `git revert 0d1a39e`).
+- 로컬 `main` 에 Wave 4-N 머지 커밋 `660c810` 까지 포함되었다 (Wave 4-N 구현 커밋 `36627f7`, 그 직전 Wave 4-M 머지 커밋 `b842b21` / Wave 4-M 구현 커밋 `0d1a39e`).
+  - Wave 4-N 은 Wave 4-M 머지 후의 docs 동기화 커밋(`86c6a6a`) 위에 단일 구현 커밋 `36627f7` 으로 추가된 뒤, 머지 커밋 `660c810` 으로 로컬 `main` 에 통합되었다. 구현은 worktree `/home/ubuntu/dallo-worktrees/w4n-file-io-seam` (브랜치 `w4n-file-io-seam`) 에서 수행되었으며, push / PR / deploy 는 수행되지 않았다 (정책 유지).
+- 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 Bandit/Semgrep 실행 / network 호출도 수행되지 않았다.
+- 마지막 검증된 targeted 테스트 결과 (final main, post-merge): `tests/test_bandit_file_io_seam.py` `tests/test_semgrep_file_io_seam.py` → **23 passed in 0.09s** (worktree 시점 동일 스위트 23 passed — 동일 결과, timing 만 환경 차이).
+  - 마지막 검증된 broader targeted 테스트 결과 (final main, post-merge): 두 신규 스위트 + 기존 bandit/semgrep/security_checker/pipeline 회귀 → **95 passed in 1.86s** (worktree 시점 동일 스위트 95 passed — 동일 결과).
+  - 마지막 검증된 full 테스트 결과 (final main, post-merge): ``pytest tests/ -q`` → **735 passed, 5 warnings in 33.60s**. Wave 4-M 시점 712 → +23 신규 회귀 테스트 (``tests/test_bandit_file_io_seam.py`` / ``tests/test_semgrep_file_io_seam.py`` 합산). 5 warnings 는 Wave 4-J/4-K/4-L/4-M 과 동일한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로, 본 wave 의 blocker 가 아니다.
+- Post-merge fake smoke: ``WAVE4N_MAIN_FAKE_SMOKE_PASS injected_file_io_used no_real_disk_write no_real_scanner`` — 주입된 fake ``FileIO`` 만 호출되고 실제 디스크 쓰기/실 스캐너 호출 0건. (worktree 시점 동일 결과: ``WAVE4N_FAKE_SMOKE_PASS injected_file_io_used no_real_disk_write no_real_scanner``.)
+- 운영 보안 스캔 (post-merge): 변경 diff 의 secret-like 값 0건, 신규 추가 라인 dangerous 호출(``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``pickle.loads`` / ``subprocess.run`` 직접) 0건, production AST dangerous pattern 0건, ``api.server`` 결합 0건, ``shared/schemas.py`` diff 0. 직접 ``open(`` / ``json.dump(`` / ``readlines`` 호출은 의도대로 ``analyzer/file_io.py`` 에만 존재. 본 wave 는 외부 동작 / 정책 변경이 없고 두 runner 생성자에 키워드-온리 ``file_io`` 자리를 추가하고 디스크 쓰기/원본 라인 읽기를 ``self._file_io`` 로 통과시킨 변경만 다룬다. ``shared/schemas.py`` / ``shared/command_env.py`` / API / frontend 변경 없음.
+- Independent review: APPROVED, scope-correct, behavior preserved, no regression concerns (보고 스트림 ``/tmp/dallo-wave4n-review.stream.jsonl``).
+- Rollback: `git revert -m 1 660c810` (구현 커밋만 되돌릴 경우 `git revert 36627f7`).
 - 다음 권장 작업 후보 (어느 것도 아직 승인된 wave 가 아님 — 후보 단계):
-  - **Wave 4-N (후보)** Bandit/Semgrep file I/O seam: 두 runner 가 결과 파일/임시 파일 읽기에 쓰는 file I/O 경계를 작은 어댑터/seam 으로 분리해 fakeable 화.
   - **Wave 4-O (후보)** Validator file write seam: validator 측의 sandbox 외 파일 쓰기 경계를 어댑터/seam 으로 분리.
   - **Wave 4-P (후보)** DB clock seam: DB 서비스 계층의 시계 의존(``datetime.now`` / ``utcnow``) 을 sleeper-adapter 와 동일 패턴으로 fakeable 화.
   - **Wave 4-Q (후보)** dormant GitHub client HTTP seam: 휴면 상태인 ``integrations/github_client.py`` 의 HTTP 경계를 ``github_pr_comment_adapter`` 와 동일한 어댑터 패턴으로 정리할지 검토.
@@ -1081,4 +1148,4 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-*문서 버전: Wave 4-M 시점 (2026-05-07).*
+*문서 버전: Wave 4-N 시점 (2026-05-08).*
