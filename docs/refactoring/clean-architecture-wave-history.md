@@ -227,7 +227,7 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-L | `875c3ac` | Security checker 스캐너 seam (Bandit/Semgrep DI) | `validator/security_checker.py`, `tests/test_security_checker.py` | ``SecurityChecker`` DI seam + lazy default factory + 23 신규 회귀 테스트 |
 | 4-M | `b842b21` | LLM agent retry sleeper seam | `agent/llm_agent.py`, `tests/test_llm_agent_sleeper_adapter.py` | retry-loop ``time.sleep`` 경계를 DI 로 fakeable 화하고 운영 기본값(``time.sleep``) 보존 |
 | 4-N | `660c810` | Bandit/Semgrep 파일 I/O seam | `analyzer/file_io.py`, `analyzer/bandit_runner.py`, `analyzer/semgrep_runner.py`, `tests/test_bandit_file_io_seam.py`, `tests/test_semgrep_file_io_seam.py` | 결과 JSON 쓰기 + Semgrep snippet 원본 라인 읽기 경계를 ``FileIO`` 어댑터로 위임, keyword-only DI |
-| 4-O | (TBD — 머지 전) | Validator 파일 쓰기 seam | `validator/file_io.py`, `validator/test_runner.py`, `validator/security_checker.py`, `validator/syntax_checker.py`, `tests/test_validator_file_io_seam.py` | sandbox 타깃 / 보안 재검증 임시 / flake8 임시 ``.py`` 쓰기 경계를 validator-local ``FileIO`` 어댑터로 위임, keyword-only DI |
+| 4-O | `157a30d` (구현 `1cfcbcd`) | Validator 파일 쓰기 seam | `validator/file_io.py`, `validator/test_runner.py`, `validator/security_checker.py`, `validator/syntax_checker.py`, `tests/test_validator_file_io_seam.py` | sandbox 타깃 / 보안 재검증 임시 / flake8 임시 ``.py`` 쓰기 경계를 validator-local ``FileIO`` 어댑터로 위임, keyword-only DI |
 
 ---
 
