@@ -13,6 +13,7 @@ from typing import Optional
 from pathlib import Path
 
 from shared.command_env import build_child_env
+from analyzer.file_io import FileIO, get_default_file_io
 from analyzer.static_tool_command_runner import StaticToolCommandRunner
 
 
@@ -78,9 +79,14 @@ class BanditRunner:
         self,
         config_path: Optional[str] = None,
         runner: Optional[StaticToolCommandRunner] = None,
+        *,
+        file_io: Optional[FileIO] = None,
     ):
         self.config_path = config_path or "config/bandit.yml"
         self._runner = runner or StaticToolCommandRunner()
+        # Wave 4-N: 결과 JSON 저장 경계를 keyword-only seam 으로 분리.
+        # ``None`` 이면 ``run`` 시점에 lazy 로 기본 어댑터를 해석한다.
+        self._file_io = file_io
 
     def run(self, target_path: str, output_path: Optional[str] = None) -> AnalysisResult:
         """
@@ -124,11 +130,10 @@ class BanditRunner:
                 raw = self._parse_json_output(proc.stdout)
                 result.raw_output = raw
 
-                # 리포트 저장
+                # 리포트 저장 (Wave 4-N: file_io 경계로 위임)
                 if output_path:
-                    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-                    with open(output_path, "w", encoding="utf-8") as f:
-                        json.dump(raw, f, indent=2, ensure_ascii=False)
+                    file_io = self._file_io or get_default_file_io()
+                    file_io.write_json(output_path, raw)
 
                 # 결과 파싱
                 result = self._parse_results(raw, result)
