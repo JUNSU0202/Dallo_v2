@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-N 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-O 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -33,7 +33,7 @@ Dallo 의 리팩터링은 **세 단계의 큰 흐름** 으로 진행되었다.
 | --- | --- | --- | --- |
 | **Wave 2 (A~S, 19 wave)** | API/라우터/서비스/부트스트랩/경로 안정화 | 단일 파일에 뭉친 책임을 라우터·서비스 계층으로 분리, 부트스트랩 부수효과 정리, 경로 안전성 강화 | `api/server.py` 거대 파일을 라우터/서비스 단위로 분해 |
 | **Wave 3 (A~J, 11 wave)** | analyzer/외부 의존 경계 추출 | subprocess·HTTP·시간 의존성을 어댑터(seam)로 분리, fakeable 테스트 가능한 구조로 전환 | `pip-audit`, Bandit, Semgrep, Sonar scanner, Sonar HTTP, polling clock 까지 모두 외부 경계 격리 |
-| **Wave 4 (A~M, 13 wave)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam + agent LLM retry sleeper seam | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam, ``DalloAgent`` LLM retry sleeper DI seam | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 + LLM retry 시계 경계 fakeable 화 |
+| **Wave 4 (A~O, 15 wave)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam + agent LLM retry sleeper seam + analyzer 파일 I/O seam + validator 파일 쓰기 seam | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam, ``DalloAgent`` LLM retry sleeper DI seam, ``BanditRunner``/``SemgrepRunner`` 파일 I/O 어댑터, ``TestRunner``/``SecurityChecker``/``SyntaxChecker`` 파일 쓰기 어댑터 | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 + LLM retry 시계 경계 fakeable 화 + analyzer/validator 파일 시스템 경계 fakeable 화 |
 
 핵심 원칙은 다음 네 가지다.
 
@@ -226,6 +226,8 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-K | `515a9d1` | Validator sandbox 경로/심볼릭 링크/cleanup 하드닝 | `validator/test_runner.py`, `tests/test_validator_sandbox_hardening.py` | sandbox 경로 traversal 차단 + symlink 정책 명시 + finally cleanup |
 | 4-L | `875c3ac` | Security checker 스캐너 seam (Bandit/Semgrep DI) | `validator/security_checker.py`, `tests/test_security_checker.py` | ``SecurityChecker`` DI seam + lazy default factory + 23 신규 회귀 테스트 |
 | 4-M | `b842b21` | LLM agent retry sleeper seam | `agent/llm_agent.py`, `tests/test_llm_agent_sleeper_adapter.py` | retry-loop ``time.sleep`` 경계를 DI 로 fakeable 화하고 운영 기본값(``time.sleep``) 보존 |
+| 4-N | `660c810` | Bandit/Semgrep 파일 I/O seam | `analyzer/file_io.py`, `analyzer/bandit_runner.py`, `analyzer/semgrep_runner.py`, `tests/test_bandit_file_io_seam.py`, `tests/test_semgrep_file_io_seam.py` | 결과 JSON 쓰기 + Semgrep snippet 원본 라인 읽기 경계를 ``FileIO`` 어댑터로 위임, keyword-only DI |
+| 4-O | (TBD — 머지 전) | Validator 파일 쓰기 seam | `validator/file_io.py`, `validator/test_runner.py`, `validator/security_checker.py`, `validator/syntax_checker.py`, `tests/test_validator_file_io_seam.py` | sandbox 타깃 / 보안 재검증 임시 / flake8 임시 ``.py`` 쓰기 경계를 validator-local ``FileIO`` 어댑터로 위임, keyword-only DI |
 
 ---
 
@@ -1059,11 +1061,77 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - Rollback: `git revert -m 1 660c810` (구현 커밋만 되돌릴 경우 `git revert 36627f7`). 되돌리면 file I/O seam 회귀 가드는 사라지지만, 운영 시 두 runner 가 stdlib ``open`` / ``json.dump`` / ``readlines`` 를 직접 호출하던 상태로 돌아가 동작 자체는 동일하다. 호출자는 두 모드 모두에서 호환된다.
 - 초보자용 설명: "Bandit 과 Semgrep 두 분석기는 ‘외부 도구를 실행’ + ‘결과 JSON 을 받아서 파싱’ + ‘결과를 (옵션으로) 디스크에 떨어뜨린다’ + ‘Semgrep 은 라인 정보를 가지고 원본 소스의 그 줄 주변을 다시 읽어 snippet 을 붙인다’ 를 한 클래스 안에서 했다. 이 중 ‘디스크에 쓴다’, ‘파일을 라인 단위로 읽는다’ 는 사실 ‘파일 시스템’ 이라는 다른 외부 자원이다. Wave 4-N 은 ``FileIO`` 라는 작은 어댑터를 만들어 그 두 동작만 거기에 모았다. 두 runner 는 평소에는 그 어댑터의 기본 인스턴스를 lazy 하게 받아 그대로 쓰지만(즉 운영 동작은 그대로), 테스트는 ``BanditRunner(file_io=fake)`` / ``SemgrepRunner(config='auto', file_io=fake)`` 처럼 가짜 ``FileIO`` 를 끼워넣어 실제 디스크에 쓰거나 실제 파일을 읽지 않고도 ‘결과 파일이 정확한 경로/포맷으로 쓰일까’, ‘snippet 윈도우가 정확히 계산될까’ 를 즉시 검증한다. 사용자가 평소처럼 ``BanditRunner()`` / ``SemgrepRunner(config='auto')`` 라고만 부르면 진짜 디스크 I/O 가 그대로 쓰이므로, 운영 동작은 한 줄도 바뀌지 않는다."
 
+### Wave 4-O — Validator file write seam
+
+- 머지 커밋: (TBD — Hermes local merge 전)
+- 구현 커밋: (worktree `/home/ubuntu/dallo-worktrees/w4o-validator-file-io-seam`, 브랜치 `w4o-validator-file-io-seam` 의 단일 구현 커밋)
+- 주요 파일/영역:
+  - `validator/file_io.py` (신규 — validator 측 파일 쓰기 어댑터)
+  - `validator/test_runner.py`
+  - `validator/security_checker.py`
+  - `validator/syntax_checker.py`
+  - `tests/test_validator_file_io_seam.py` (신규 회귀 테스트, 30개)
+- 이전 구조: 세 validator 모듈 모두 외부 도구 호출은 어댑터/seam 으로 분리되어 있었지만 (Wave 4-A ``ValidatorCommandRunner``, Wave 4-L ``SecurityChecker`` Bandit/Semgrep DI), **임시/sandbox 파일 쓰기** 책임은 여전히 본문에 stdlib ``open(..., "w").write(...)`` 또는 ``tempfile.NamedTemporaryFile(mode="w").write(...)`` 호출로 박혀 있었다. 구체적으로:
+  - `validator/test_runner.py` `_run_in_sandbox` 의 sandbox 타깃 쓰기 — ``with open(target_file, "w", encoding="utf-8") as f: f.write(fixed_code)``.
+  - `validator/security_checker.py` `_run_security_scan` 의 ``fixed_{filename}`` / ``original_{filename}`` 임시 쓰기 — 동일 패턴 두 번.
+  - `validator/syntax_checker.py` `check_with_flake8` 의 ``.py`` 임시 쓰기 — ``tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False).write(code)``.
+- 문제/위험:
+  - **테스트 비결정성/디스크 부수효과**: 위 세 boundary 의 회귀 가드를 단위 테스트로 만들려면 실제 파일을 만들고 정리하거나 전역 ``builtins.open`` 을 monkeypatch 해야 했다. 후자는 같은 인터프리터의 다른 라이브러리에도 영향을 주어 비대칭적이다.
+  - **외부 자원 경계의 도메인 침투**: 세 클래스의 핵심 책임은 “외부 도구 호출 + 결과 매핑” 이지만 거기에 “파일 시스템에 임시 파일을 쓴다” 라는 *별개* 의 외부 자원 경계가 함께 있어, validator 단위 테스트가 격리되기 어려웠다.
+  - **LLM 코드 격리 환경의 검증 한계**: ``TestRunner`` 의 sandbox 타깃 쓰기는 LLM 이 생성한 코드가 sandbox 디렉토리 *안* 의 파일에만 정확히 들어가는지 검증하기 위한 핵심 회귀 가드가 필요한 영역이다 (Wave 4-K traversal 차단의 보완재). 실 디스크 쓰기 없이 “fixed_code 가 정확히 sandbox-내부 경로로 흘러갔는가” 를 검증하는 seam 이 없었다.
+  - **Wave 4-N 과의 비대칭성**: analyzer 측 (``BanditRunner`` / ``SemgrepRunner``) 의 파일 I/O 경계는 Wave 4-N 에서 이미 ``analyzer/file_io.py`` 어댑터로 분리되었는데, validator 측은 같은 패턴이 적용되지 않아 “외부 자원 어댑터 패턴” 이 일관되게 적용되지 않은 상태였다.
+- 변경:
+  - 신규 ``validator/file_io.py`` 모듈을 도입. ``FileIO`` 클래스는 두 개의 메서드만 노출한다.
+    - ``write_text(path, content)``: UTF-8 텍스트로 ``open(path, "w").write`` 와 동등한 동작. ``TestRunner`` / ``SecurityChecker`` 의 known-path 쓰기에 사용.
+    - ``write_named_temp(content, suffix='')``: ``tempfile.NamedTemporaryFile(mode="w", suffix=..., delete=False, encoding="utf-8")`` 와 동등한 동작으로 새 임시 파일을 생성·기록·반환. 호출자(``SyntaxChecker.check_with_flake8``) 의 ``finally: os.unlink(...)`` cleanup 계약을 그대로 보존.
+    - 모듈 레벨 ``get_default_file_io()`` 가 단일 기본 ``FileIO`` 인스턴스를 lazy 하게 반환. 세 validator 모듈이 ``file_io=None`` 으로 생성되어도 운영 경로는 그대로 stdlib 파일 I/O 를 사용한다.
+  - ``TestRunner.__init__`` 에 keyword-only ``file_io: Optional[FileIO] = None`` 파라미터를 추가. 기존 ``TestRunner(project_root=..., runner=...)`` / ``TestRunner()`` / ``TestRunner(project_root=...)`` 호출 형태는 그대로 동작한다 (positional 호환성 보존). ``_run_in_sandbox`` 의 sandbox 타깃 쓰기를 ``file_io.write_text(target_file, fixed_code)`` 로 교체.
+  - ``SecurityChecker.__init__`` 에 keyword-only ``file_io`` 파라미터를 추가 (기존 ``bandit_runner`` / ``semgrep_runner`` 도 keyword-only). ``_run_security_scan`` 의 fixed/original 두 임시 쓰기를 동일 ``file_io`` 인스턴스의 ``write_text`` 호출로 교체. lazy 해석은 ``_run_security_scan`` 시점에 한 번만 — 같은 호출 내 두 쓰기가 같은 어댑터 인스턴스를 공유.
+  - ``SyntaxChecker.__init__`` 에 keyword-only ``file_io`` 파라미터를 추가. 기존 ``SyntaxChecker(runner=...)`` / ``SyntaxChecker()`` 호출 형태는 그대로. ``check_with_flake8`` 의 ``tempfile.NamedTemporaryFile(...)`` 블록을 ``file_io.write_named_temp(code, suffix=".py")`` 한 줄로 교체. ``except FileNotFoundError`` 폴백 분기와 ``finally: os.unlink(tmp_path)`` cleanup 분기는 그대로 보존. ``import tempfile`` 은 syntax_checker.py 본문에서 제거되었으며 (어댑터로 이동), ``os.unlink`` cleanup 만 모듈에 남는다.
+  - 신규 ``tests/test_validator_file_io_seam.py`` (총 30개) 를 추가:
+    - DI seam: 세 클래스 모두 keyword-only ``file_io=...`` 인자 수용, positional 거부 (TypeError), 기본 생성자에서 ``get_default_file_io()`` 가 lazy 해석됨, 주입된 fake 만 호출되며 stdlib ``open`` / ``NamedTemporaryFile`` 직접 호출은 발생하지 않음.
+    - 어댑터 자체 표면: ``FileIO`` / ``write_text`` / ``write_named_temp`` / ``get_default_file_io`` 존재, 기본 어댑터의 UTF-8 디스크 쓰기 동작 (한글 round-trip), 기본 ``write_named_temp`` 의 임시 파일 생성/내용 보존.
+    - ``TestRunner(file_io=fake)``: sandbox 타깃 쓰기에 fake 가 단 한 번 호출되고 path 가 sandbox 임시 디렉토리(``dallo_test_*``) 안의 ``target.py`` 임. 원본 ``project_root`` 의 파일은 변경 없음.
+    - ``SecurityChecker(file_io=fake)``: ``original_code`` 비어 있으면 1회 (``fixed_app.py``), 있으면 2회 (``fixed_app.py`` + ``original_app.py``) 호출. fake bandit/semgrep 도 같은 임시 경로로 호출됨.
+    - ``SyntaxChecker(file_io=fake)``: ``write_named_temp`` 가 정확한 suffix(`.py`) 와 content 로 호출되고, fake 가 돌려준 경로가 flake8 argv 마지막 인자에 들어감. ``FileNotFoundError`` 폴백이 fake 도입 후에도 그대로 동작.
+    - 정적 가드(AST): 세 validator 모듈 본문에 직접 ``open(..., 'w'/'a'/'x')`` 호출 / ``.write(...)`` 속성 호출 / ``tempfile.NamedTemporaryFile`` 잔존 0건. 동시에 ``validator/file_io.py`` 본문에는 어댑터 구현으로 ``open(..., 'w')`` + ``.write(...)`` 가 *반드시* 존재해야 한다는 양방향 회귀 가드.
+    - lazy quietness: 세 클래스 모두 인스턴스화 시점에 ``FileIO.write_text`` / ``FileIO.write_named_temp`` 가 한 번도 호출되지 않음.
+- 클린 아키텍처 적합성: 외부 자원(파일 시스템) 경계를 도메인 어댑터로 분리한다. 이는 Wave 3-G (외부 명령 어댑터), Wave 4-F/4-G (자식 env sanitizer), Wave 4-L (security checker DI seam), Wave 4-M (sleeper seam), Wave 4-N (analyzer 파일 I/O seam) 과 동일한 형태로, 본 wave 는 같은 패턴을 validator 측에 처음으로 적용한다. 결과적으로 ``TestRunner`` / ``SecurityChecker`` / ``SyntaxChecker`` 는 “외부 도구 호출 + 결과 매핑” 단일 책임에 더 가까워지고, 임시/sandbox 파일 쓰기는 어느 쪽도 “이 외부 자원에 접근” 이라는 한 종류의 책임만 가진 ``FileIO`` 어댑터로 위임된다. 의존 방향은 validator 내부에서만 닫히며 (validator-local 어댑터, ``analyzer/file_io.py`` 와 무관), analyzer 와의 양방향 결합을 도입하지 않는다.
+- 보존된 동작:
+  - ``TestRunner()`` / ``TestRunner(project_root=...)`` / ``TestRunner(project_root=..., runner=...)`` 기본/positional 생성자 — 기존 호출자(파이프라인) 변경 없이 동작.
+  - ``SecurityChecker()`` / ``SecurityChecker(bandit_runner=..., semgrep_runner=...)`` 기존 호출 형태 보존.
+  - ``SyntaxChecker()`` / ``SyntaxChecker(runner=...)`` 기존 호출 형태 보존.
+  - ``_run_in_sandbox`` 의 sandbox 디렉토리 lifecycle (``tempfile.mkdtemp(prefix="dallo_test_")`` + ``shutil.copytree`` + ``finally: shutil.rmtree``), Wave 4-K 의 traversal/symlink/cleanup 하드닝 정책, sandbox pytest argv/cwd/timeout/env 정책 — 한 줄도 바뀌지 않음.
+  - ``_run_security_scan`` 의 fixed/original 비교 로직, ``removed_count`` / ``introduced_count`` 산정, ``tool_used`` 매핑(``bandit+semgrep`` / ``semgrep``), Wave 4-L fail-open 동작 (``tool_used="error"`` + ``passed=True``) 보존.
+  - ``check_with_flake8`` 의 ``.py`` suffix, flake8 argv (``["flake8", "--select=E9,F63,F7,F82", tmp_path]``), timeout=10, ``FileNotFoundError`` 폴백 → ``_check_syntax``, ``finally: os.unlink(tmp_path)`` cleanup 보존.
+  - JSON 직렬화 / Bandit/Semgrep 출력 파싱 / ``Vulnerability`` 매핑 등 analyzer 동작 (Wave 4-N 결과물) 변경 없음.
+  - 한국어 메시지 (``"테스트 실행 시간 초과 (60초)"``, ``"보안 재검증 통과"`` / ``"보안 재검증 실패"`` / ``"문법 오류"`` 등) 변경 없음.
+  - 자식 env sanitizer (Wave 4-I/4-J 의 ``build_child_env`` + caller-specific allowlist) 변경 없음.
+  - subprocess 정책 변경 없음 (Wave 4-A ``ValidatorCommandRunner`` 그대로).
+  - API 응답 모양과 ``shared/schemas.py`` 무변경 — 프런트엔드 계약/스키마 변화 0.
+- 검증 근거:
+  - Worktree pre-implementation RED: ``tests/test_validator_file_io_seam.py`` → **22 failed, 8 passed** (8 = 기존 호환 검증 테스트 — 어댑터 도입 *전* 에도 통과해야 정상). 22 실패의 핵심 메시지: ``ModuleNotFoundError: No module named 'validator.file_io'`` 와 ``assert 'file_io' in mappingproxy(...)`` (생성자 시그니처 미반영) 등.
+  - Worktree post-implementation targeted: ``tests/test_validator_file_io_seam.py`` → **30 passed in 0.08s**.
+  - Worktree broader targeted: ``tests/test_validator_file_io_seam.py`` ``tests/test_validator_sandbox_hardening.py`` ``tests/test_security_checker.py`` ``tests/test_syntax_checker.py`` ``tests/test_validator_command_runner_adapter.py`` ``tests/test_bandit_file_io_seam.py`` ``tests/test_semgrep_file_io_seam.py`` → **129 passed in 0.44s**.
+  - Worktree full: ``pytest tests/ -q`` → **765 passed, 5 warnings in 36.08s** (Wave 4-N 시점 735 → +30 신규 회귀 테스트).
+  - Worktree security/schema scans: 변경 diff 에 secret-like 값 부재, 신규 추가 라인에서 ``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``pickle.loads`` / ``subprocess.run`` 직접 호출 부재, ``shared/schemas.py`` diff 0. 직접 ``open(..., 'w')`` / ``.write(...)`` / ``NamedTemporaryFile`` 호출은 의도대로 ``validator/file_io.py`` 에만 존재.
+  - 실 외부 호출 0건. push / PR / deploy / production DB / 실 외부 Dallo 호출 / 실 flake8 / 실 pytest sandbox / 실 Bandit/Semgrep / network 호출 모두 수행되지 않았다.
+- 명시적 비적용 (의도적 비행동):
+  - DB clock/deprecation 정리 비적용 (Wave 4-P 후보 범위, ``db/models.py`` / ``db/service.py`` / ``api/services/*`` datetime 정책 무변경).
+  - dormant ``integrations/github_client.py`` HTTP seam 비적용 (Wave 4-Q 후보 범위).
+  - ``shared/schemas.py`` / ``shared/command_env.py`` 변경 없음.
+  - ``analyzer/file_io.py`` 무변경 — analyzer/validator 의 의존 방향 분리 유지.
+  - subprocess/env 정책 변경 없음.
+  - API / frontend / schema 계약 변경 없음.
+  - push / PR / deploy / production DB / external service 호출 없음 (정책 유지).
+- Rollback: `git revert -m 1 <merge-sha>` (구현 커밋만 되돌릴 경우 `git revert <impl-sha>`). 되돌리면 validator 측 file write seam 회귀 가드는 사라지지만, 운영 시 세 모듈이 stdlib ``open`` / ``NamedTemporaryFile`` 을 직접 호출하던 상태로 돌아가 동작 자체는 동일하다. 호출자는 두 모드 모두에서 호환된다.
+- 초보자용 설명: "validator 의 세 모듈은 LLM 이 생성한 수정 코드를 검증하기 위해 ‘sandbox 디렉토리 안의 타깃 파일에 코드를 쓴다’ (TestRunner), ‘재검증용 fixed/original 임시 파일에 코드를 쓴다’ (SecurityChecker), ‘flake8 에 넘길 .py 임시 파일에 코드를 쓴다’ (SyntaxChecker) 라는 세 종류의 파일 쓰기를 직접 stdlib ``open`` / ``NamedTemporaryFile`` 로 처리해 왔다. Wave 4-O 는 그 세 쓰기 동작만 ``validator/file_io.py`` 라는 작은 어댑터로 모았다. 세 클래스는 평소에는 그 어댑터의 기본 인스턴스를 lazy 하게 받아 그대로 쓰지만(즉 운영 동작은 한 줄도 바뀌지 않음), 테스트는 ``TestRunner(file_io=fake)`` 처럼 가짜 ``FileIO`` 를 끼워넣어 실제 디스크에 쓰지 않고도 ‘정확히 어떤 경로/내용이 들어갔는가’ 를 즉시 검증할 수 있다. analyzer 측 파일 I/O seam (Wave 4-N) 과 같은 패턴이지만 의존 방향 격리를 위해 validator 전용 어댑터를 따로 두었다."
+
 ---
 
 ## 9. 보안 강화 관점 요약
 
-이 절은 Wave 2-S → Wave 4-N 을 보안 관점으로 다시 본다.
+이 절은 Wave 2-S → Wave 4-O 를 보안 관점으로 다시 본다.
 
 ### 9.1 무엇이 줄어들었나
 
@@ -1091,6 +1159,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - 따라서 테스트 실행은 실제 Bandit/Semgrep/Sonar/pip-audit/npm/flake8/sandbox pytest/GitHub API 를 호출하지 않는다.
 - Wave 4-M 이후로는 ``DalloAgent`` 의 retry 대기(``self._sleeper``) 까지 fake 로 교체 가능해, 단위 테스트가 “rate-limit 에 걸려서 3 초 기다리고 재시도한다” 같은 시나리오를 실제 wall-clock 대기 없이 즉시 검증한다. 즉 fake seam 의 적용 범위가 외부 명령/HTTP 에서 *시계 경계(time boundary)* 까지 확장되어, 테스트가 진짜 Gemini/OpenRouter 호출이나 실제 ``time.sleep`` 부수효과를 일으킬 가능성도 0 에 가깝게 줄어들었다.
 - Wave 4-N 이후로는 ``BanditRunner`` / ``SemgrepRunner`` 의 결과 파일 쓰기와 Semgrep snippet 원본 라인 읽기까지 fake ``FileIO`` 로 교체 가능해, 단위 테스트가 “결과 JSON 이 정확한 경로/포맷으로 쓰일까”, “snippet 윈도우가 어떻게 잡힐까” 를 실제 디스크 부수효과 없이 즉시 검증한다. 즉 fake seam 의 적용 범위가 *파일 시스템 경계(file-system boundary)* 까지 확장되어, 테스트가 실제 파일 쓰기/읽기로 인한 부수효과(임시 파일 잔류, OS 별 줄바꿈/인코딩 차이) 를 일으킬 가능성도 0 에 가깝게 줄어들었다.
+- Wave 4-O 이후로는 validator 측 (``TestRunner`` sandbox 타깃 쓰기, ``SecurityChecker`` fixed/original 임시 쓰기, ``SyntaxChecker`` flake8 ``.py`` 임시 쓰기) 까지 같은 패턴으로 fake ``FileIO`` 교체가 가능해, LLM 이 생성한 코드가 sandbox-내부 경로로만 들어가는지 / 보안 재검증 임시 파일이 정확한 이름·내용으로 만들어지는지 / flake8 임시 파일이 정확한 suffix·content 로 쓰이는지를 실제 디스크 쓰기 없이 즉시 검증한다. analyzer/validator 양쪽 모두에 “파일 시스템 어댑터” 패턴이 균일하게 적용된 셈이다 (validator 측 어댑터는 의존 방향 격리를 위해 ``analyzer/file_io.py`` 와 별도로 ``validator/file_io.py`` 에 둔다).
 - 이 구조 덕분에 “테스트가 비밀을 흘리거나 외부에 부수효과를 일으킬 가능성” 자체가 거의 0 이 된다.
 
 ### 9.4 GitHub push 를 미루고 있는 이유 (의도된 비행동)
@@ -1104,20 +1173,17 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-## 10. 현재 상태 (Wave 4-N 시점)
+## 10. 현재 상태 (Wave 4-O 시점)
 
 - 로컬 `main` 에 Wave 4-N 머지 커밋 `660c810` 까지 포함되었다 (Wave 4-N 구현 커밋 `36627f7`, 그 직전 Wave 4-M 머지 커밋 `b842b21` / Wave 4-M 구현 커밋 `0d1a39e`).
-  - Wave 4-N 은 Wave 4-M 머지 후의 docs 동기화 커밋(`86c6a6a`) 위에 단일 구현 커밋 `36627f7` 으로 추가된 뒤, 머지 커밋 `660c810` 으로 로컬 `main` 에 통합되었다. 구현은 worktree `/home/ubuntu/dallo-worktrees/w4n-file-io-seam` (브랜치 `w4n-file-io-seam`) 에서 수행되었으며, push / PR / deploy 는 수행되지 않았다 (정책 유지).
-- 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 Bandit/Semgrep 실행 / network 호출도 수행되지 않았다.
-- 마지막 검증된 targeted 테스트 결과 (final main, post-merge): `tests/test_bandit_file_io_seam.py` `tests/test_semgrep_file_io_seam.py` → **23 passed in 0.09s** (worktree 시점 동일 스위트 23 passed — 동일 결과, timing 만 환경 차이).
-  - 마지막 검증된 broader targeted 테스트 결과 (final main, post-merge): 두 신규 스위트 + 기존 bandit/semgrep/security_checker/pipeline 회귀 → **95 passed in 1.86s** (worktree 시점 동일 스위트 95 passed — 동일 결과).
-  - 마지막 검증된 full 테스트 결과 (final main, post-merge): ``pytest tests/ -q`` → **735 passed, 5 warnings in 33.60s**. Wave 4-M 시점 712 → +23 신규 회귀 테스트 (``tests/test_bandit_file_io_seam.py`` / ``tests/test_semgrep_file_io_seam.py`` 합산). 5 warnings 는 Wave 4-J/4-K/4-L/4-M 과 동일한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로, 본 wave 의 blocker 가 아니다.
-- Post-merge fake smoke: ``WAVE4N_MAIN_FAKE_SMOKE_PASS injected_file_io_used no_real_disk_write no_real_scanner`` — 주입된 fake ``FileIO`` 만 호출되고 실제 디스크 쓰기/실 스캐너 호출 0건. (worktree 시점 동일 결과: ``WAVE4N_FAKE_SMOKE_PASS injected_file_io_used no_real_disk_write no_real_scanner``.)
-- 운영 보안 스캔 (post-merge): 변경 diff 의 secret-like 값 0건, 신규 추가 라인 dangerous 호출(``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``pickle.loads`` / ``subprocess.run`` 직접) 0건, production AST dangerous pattern 0건, ``api.server`` 결합 0건, ``shared/schemas.py`` diff 0. 직접 ``open(`` / ``json.dump(`` / ``readlines`` 호출은 의도대로 ``analyzer/file_io.py`` 에만 존재. 본 wave 는 외부 동작 / 정책 변경이 없고 두 runner 생성자에 키워드-온리 ``file_io`` 자리를 추가하고 디스크 쓰기/원본 라인 읽기를 ``self._file_io`` 로 통과시킨 변경만 다룬다. ``shared/schemas.py`` / ``shared/command_env.py`` / API / frontend 변경 없음.
-- Independent review: APPROVED, scope-correct, behavior preserved, no regression concerns (보고 스트림 ``/tmp/dallo-wave4n-review.stream.jsonl``).
-- Rollback: `git revert -m 1 660c810` (구현 커밋만 되돌릴 경우 `git revert 36627f7`).
+  - Wave 4-O 는 Wave 4-N 머지 후의 docs 동기화 커밋(`718ee19`) 위에 단일 구현 커밋으로 worktree `/home/ubuntu/dallo-worktrees/w4o-validator-file-io-seam` (브랜치 `w4o-validator-file-io-seam`) 에서 추가되었으며, 본 worktree 머지 커밋은 아직 생성되지 않은 상태다 (Hermes local merge 대기 중). push / PR / deploy 는 수행되지 않았다 (정책 유지).
+- 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출도 수행되지 않았다.
+- 마지막 검증된 targeted 테스트 결과 (worktree pre-merge): `tests/test_validator_file_io_seam.py` → **30 passed in 0.08s**.
+  - 마지막 검증된 broader targeted 테스트 결과 (worktree pre-merge): ``tests/test_validator_file_io_seam.py`` ``tests/test_validator_sandbox_hardening.py`` ``tests/test_security_checker.py`` ``tests/test_syntax_checker.py`` ``tests/test_validator_command_runner_adapter.py`` ``tests/test_bandit_file_io_seam.py`` ``tests/test_semgrep_file_io_seam.py`` → **129 passed in 0.44s**.
+  - 마지막 검증된 full 테스트 결과 (worktree pre-merge): ``pytest tests/ -q`` → **765 passed, 5 warnings in 36.08s**. Wave 4-N 시점 735 → +30 신규 회귀 테스트 (``tests/test_validator_file_io_seam.py``). 5 warnings 는 Wave 4-J/4-K/4-L/4-M/4-N 과 동일한 기존 SQLAlchemy ``datetime.datetime.utcnow()`` deprecation + asyncio no-current-event-loop 경고로, 본 wave 의 blocker 가 아니다.
+- Worktree 보안 스캔: 변경 diff 의 secret-like 값 0건, 신규 추가 라인 dangerous 호출(``shell=True`` / ``os.system`` / ``os.popen`` / ``eval`` / ``exec`` / ``pickle.loads`` / ``subprocess.run`` 직접) 0건, ``shared/schemas.py`` diff 0. 직접 ``open(..., 'w')`` / ``.write(...)`` / ``NamedTemporaryFile`` 호출은 의도대로 ``validator/file_io.py`` 에만 존재 (정적 가드 회귀 테스트가 양방향으로 보장). 본 wave 는 외부 동작 / 정책 변경이 없고 세 validator 클래스 생성자에 keyword-only ``file_io`` 자리를 추가하고 sandbox/임시 쓰기를 ``self._file_io`` 로 통과시킨 변경만 다룬다. ``shared/schemas.py`` / ``shared/command_env.py`` / ``analyzer/file_io.py`` / API / frontend 변경 없음.
+- Rollback: `git revert -m 1 <merge-sha>` (구현 커밋만 되돌릴 경우 `git revert <impl-sha>`). 머지 후 갱신 예정.
 - 다음 권장 작업 후보 (어느 것도 아직 승인된 wave 가 아님 — 후보 단계):
-  - **Wave 4-O (후보)** Validator file write seam: validator 측의 sandbox 외 파일 쓰기 경계를 어댑터/seam 으로 분리.
   - **Wave 4-P (후보)** DB clock seam: DB 서비스 계층의 시계 의존(``datetime.now`` / ``utcnow``) 을 sleeper-adapter 와 동일 패턴으로 fakeable 화.
   - **Wave 4-Q (후보)** dormant GitHub client HTTP seam: 휴면 상태인 ``integrations/github_client.py`` 의 HTTP 경계를 ``github_pr_comment_adapter`` 와 동일한 어댑터 패턴으로 정리할지 검토.
   - 사설 PyPI/npm 레지스트리 capability grant wave (필요해질 때): pip 의 `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL` 와 npm 의 `NPM_CONFIG_REGISTRY` + `_authToken` 을 명시적 `DependencyScanner` 생성자 인자 + `build_child_env(extras=...)` 패턴으로 도입.
@@ -1148,4 +1214,4 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-*문서 버전: Wave 4-N 시점 (2026-05-08).*
+*문서 버전: Wave 4-O 시점 (2026-05-08).*
