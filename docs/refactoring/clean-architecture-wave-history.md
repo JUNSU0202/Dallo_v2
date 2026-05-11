@@ -229,7 +229,7 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-N | `660c810` | Bandit/Semgrep 파일 I/O seam | `analyzer/file_io.py`, `analyzer/bandit_runner.py`, `analyzer/semgrep_runner.py`, `tests/test_bandit_file_io_seam.py`, `tests/test_semgrep_file_io_seam.py` | 결과 JSON 쓰기 + Semgrep snippet 원본 라인 읽기 경계를 ``FileIO`` 어댑터로 위임, keyword-only DI |
 | 4-O | `157a30d` (구현 `1cfcbcd`) | Validator 파일 쓰기 seam | `validator/file_io.py`, `validator/test_runner.py`, `validator/security_checker.py`, `validator/syntax_checker.py`, `tests/test_validator_file_io_seam.py` | sandbox 타깃 / 보안 재검증 임시 / flake8 임시 ``.py`` 쓰기 경계를 validator-local ``FileIO`` 어댑터로 위임, keyword-only DI |
 | 4-P | `d8bf187` (구현 `560a605`) | DB clock/deprecation seam | `db/clock.py`, `db/models.py`, `tests/test_db_clock_seam.py` | SQLAlchemy ``DateTime`` default 의 deprecated ``datetime.utcnow`` 직접 참조를 fakeable ``db.clock.now`` seam 으로 교체, naive UTC shape 보존 |
-| 4-Q | (문서 전용, 머지/푸시 없음) | dormant GitHub client deferred (Option A / DOC_ONLY) | `docs/refactoring/clean-architecture-wave-history.md` | Wave 4-C 에서 deferred 로 표시된 휴면 ``integrations/github_client.py`` 에 대한 read-only audit 결과(활성 caller 0)와 Option A 결정을 본 문서에 기록만 함. 코드/테스트/스키마/설정/lock/리포트/DB 변경 0건, 모듈은 미래 capability 보존을 위해 그대로 유지 |
+| 4-Q | `b50bad8` (구현 `79b3eb1`) | dormant GitHub client deferred (Option A / DOC_ONLY) | `docs/refactoring/clean-architecture-wave-history.md` | Wave 4-C 에서 deferred 로 표시된 휴면 ``integrations/github_client.py`` 에 대한 read-only audit 결과(활성 caller 0)와 Option A 결정을 본 문서에 기록만 함. 코드/테스트/스키마/설정/lock/리포트/DB 변경 0건, 모듈은 미래 capability 보존을 위해 그대로 유지. 로컬 `main` 통합 완료, 원격 push/PR/deploy/실 외부 호출 미수행 |
 
 ---
 
@@ -1178,7 +1178,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ### Wave 4-Q — Dormant GitHub client deferred (문서 전용 / Option A)
 
-- 본 wave 의 유일한 산출물: 단일 docs-only 커밋 `docs(refactoring): record Wave 4-Q deferred GitHub client decision` (브랜치 `w4q-doc-only`). 머지 커밋 없음, 원격 push 없음, PR 없음, deploy 없음, 실 네트워크 호출 없음.
+- 본 wave 의 산출물: 단일 docs-only 구현 커밋 `79b3eb1 docs(refactoring): record Wave 4-Q deferred GitHub client decision` (브랜치 `w4q-doc-only`) 와 이를 로컬 `main` 으로 통합한 머지 커밋 `b50bad8 merge: record Wave 4-Q deferred GitHub client decision`. 원격 push 없음, PR 없음, deploy 없음, 실 네트워크 호출 없음.
 - 본 wave 는 **read-only audit 결과와 사용자 승인된 Option A (DOC_ONLY) 결정을 기록만 하는 문서 전용 wave** 다. 운영 코드, 테스트, 스키마, 설정, dependency, lock 파일, 생성된 리포트, DB 파일, ``__pycache__`` 어디에도 변경이 없다.
 - 주요 파일/영역:
   - `docs/refactoring/clean-architecture-wave-history.md` — 본 §8 의 Wave 4-Q 항목 신설, §5 타임라인 행 추가, §2 Executive Summary / §10 현재 상태 / 문서 버전 stamp 업데이트.
@@ -1203,7 +1203,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - 근거 4 — 본 결정은 가역적이다. 휴면 모듈을 코드 한 줄도 바꾸지 않고 그대로 보존하므로, 미래에 실 consumer 가 확정되는 시점에 Wave 4-Q′ 또는 4-R 로 최소 fakeable HTTP seam + explicit timeout + fake-client 테스트 + token 비누출 / 실 네트워크 미호출 회귀 가드를 추가하면 된다.
 - 변경 (문서 전용):
   - 본 §8 에 Wave 4-Q 항목 신설 (현 항목).
-  - §5 타임라인 표에 Wave 4-Q 행 추가 — “문서 전용, 머지/푸시 없음, 코드 변경 0”.
+  - §5 타임라인 표에 Wave 4-Q 행 추가 — 머지 커밋 `b50bad8` (구현 `79b3eb1`), 코드 변경 0, 원격 push 미수행.
   - §2 Executive Summary 의 Wave 4 행을 `A~Q (17 wave; 4-Q 는 문서 전용)` 로 갱신.
   - §10 “현재 상태” 헤더와 본문을 Wave 4-Q 시점으로 갱신.
   - 문서 버전 stamp 를 Wave 4-Q (2026-05-11) 로 갱신.
@@ -1231,7 +1231,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - 모든 HTTP 호출에 명시적 `timeout=` 지정.
   - 응답 본문을 raw 노출 없이 정규화된 dict 로 반환하는 계약 정의 (Check Run / line review 포함).
   - fake HTTP 클라이언트 기반 단위 테스트 + token 비누출 / 실 네트워크 미호출 회귀 가드 추가.
-- Rollback (가역성): 본 wave 는 단일 docs-only 커밋으로 구성된다. `git revert <docs commit>` 한 번으로 본 문서의 Wave 4-Q 기록 자체를 제거할 수 있고, 그 외 저장소 상태(코드/테스트/스키마/계약/보안 정책) 는 본 wave 전후가 동일하므로 revert 의 운영 영향은 0 이다 — 문서 항목만 사라진다. push / PR / deploy 가 수행되지 않았으므로 외부 가시 행위 되돌림도 필요 없다.
+- Rollback (가역성): 본 wave 는 단일 docs-only 구현 커밋 `79b3eb1` 과 이를 로컬 `main` 으로 통합한 머지 커밋 `b50bad8` 로 구성된다. 현재 main 에서는 `git revert -m 1 b50bad8` 한 번으로 본 문서의 Wave 4-Q 기록 자체를 제거할 수 있다 (구현 커밋만 되돌릴 경우 `git revert 79b3eb1`). 그 외 저장소 상태(코드/테스트/스키마/계약/보안 정책) 는 본 wave 전후가 동일하므로 revert 의 운영 영향은 0 이다 — 문서 항목만 사라진다. push / PR / deploy 가 수행되지 않았으므로 외부 가시 행위 되돌림도 필요 없다.
 - 초보자용 설명: "Wave 4-Q 는 **‘코드를 한 줄도 바꾸지 않는 wave’** 다. 우리는 `integrations/github_client.py` 라는 파일을 들여다봤다. 이 파일은 GitHub 와 통신할 수 있는 미래 기능들을 모아 둔 ‘아직 쓰지 않는 도구함’ 이다. 운영 환경의 PR 코멘트는 옆에 있는 `github_pr_comment_adapter.py` 가 처리하고 있고, 이 파일은 아무도 import 하지 않는다 (audit 으로 확인). 그래서 ‘활성화 전에 손보면 좋을 점’ (HTTP 호출에 timeout 을 안 박은 점, fake 로 갈아끼울 수 있는 seam 이 없는 점) 은 분명히 보이지만, **실제로 쓰지도 않는 상태에서 미래 모양을 미리 굳히는 건 오히려 위험할 수 있다** — 진짜 사용자가 나타났을 때 그 모양과 안 맞을 수 있기 때문이다. 그래서 사용자와 함께 ‘이번에는 코드를 안 건드리고, 다만 우리가 무엇을 보고 무엇을 결정했는지만 문서에 남기자’ 로 합의했다 (Option A / DOC_ONLY). 나중에 진짜 사용 사례가 생기면 그때 Wave 4-Q′ 같은 이름으로 timeout 박고, fake 로 갈아끼울 수 있는 seam 을 만들고, 토큰이 새지 않는지 테스트를 추가하면 된다.
 
   GitHub **Check Run** 이 뭔지 잠깐 설명한다 — GitHub 의 한 커밋이나 PR 마다 ‘이 커밋에 대해 어떤 자동 검사를 돌렸고 결과가 무엇인지’ 를 GitHub UI 의 Checks 탭에 작은 보고 한 줄로 표시해 주는 단위가 Check Run 이다. 예를 들면 ‘Bandit 정적 분석: 성공 / 실패 / 주의 + 요약 메시지 + 자세히 보기 링크’ 같은 줄을 PR 페이지에서 바로 볼 수 있게 해 준다. GitHub Actions 워크플로 자체가 자동으로 만들어 주는 Check 와 별개로, 외부 도구가 GitHub REST API 를 호출해서 직접 Check Run 을 만들 수도 있다. 휴면 모듈의 `create_check_run` 메서드는 바로 이 ‘외부에서 Check Run 을 만들어 PR 결과를 GitHub UI 에 노출하는’ 미래 기능을 준비해 둔 자산이다. 지금은 호출하지 않지만, 활성화될 때를 대비해 보존한다."
@@ -1285,8 +1285,8 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ## 10. 현재 상태 (Wave 4-Q 시점)
 
-- 로컬 `main` 의 마지막 코드 변경 머지 커밋은 여전히 Wave 4-P 머지 커밋 `d8bf187` (Wave 4-P 구현 커밋 `560a605`) 이다. Wave 4-Q 는 **문서 전용 wave 로 코드/테스트/스키마/설정/lock/리포트/DB 변경이 0건** 이며, 본 wave 의 산출물은 docs-only 커밋 `docs(refactoring): record Wave 4-Q deferred GitHub client decision` 단 하나 (브랜치 `w4q-doc-only`, 머지/푸시 미수행) 다.
-  - Wave 4-Q audit 시작 시 baseline HEAD 는 `c0ea53d docs(refactoring): update Wave 4-P history` 였다. 본 wave 는 그 위에 단일 docs-only 커밋을 추가했을 뿐 main 으로의 머지/push 는 수행하지 않았다.
+- 로컬 `main` 의 마지막 코드 변경 머지 커밋은 여전히 Wave 4-P 머지 커밋 `d8bf187` (Wave 4-P 구현 커밋 `560a605`) 이다. Wave 4-Q 는 **문서 전용 wave 로 코드/테스트/스키마/설정/lock/리포트/DB 변경이 0건** 이며, 본 wave 의 산출물은 docs-only 구현 커밋 `79b3eb1` 과 이를 로컬 `main` 으로 통합한 머지 커밋 `b50bad8` (브랜치 `w4q-doc-only`, 원격 push 미수행) 이다. 현재 로컬 `main` HEAD 는 `b50bad8` 다.
+  - Wave 4-Q audit 시작 시 baseline HEAD 는 `c0ea53d docs(refactoring): update Wave 4-P history` 였다. 본 wave 는 그 위에 단일 docs-only 구현 커밋 `79b3eb1` 을 만든 뒤 머지 커밋 `b50bad8` 로 로컬 `main` 에 통합했다. 원격 push 는 수행하지 않았다.
 - 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 GitHub API 호출 / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출도 수행되지 않았다.
 - 마지막 검증된 targeted 테스트 결과 (Wave 4-P post-merge main 기준, Wave 4-Q 동안 코드 미변경이므로 유효): `tests/test_db_clock_seam.py tests/test_api_contract.py -q` → **21 passed in 2.89s**.
   - 마지막 검증된 full 테스트 결과 (Wave 4-P post-merge main 기준, Wave 4-Q audit 시작 시점 재확인 시 동일): ``pytest tests/ -q`` → **770 passed, 1 warning** (Wave 4-Q audit 재실행 시 `770 passed, 1 warning in 37.09s`). 남은 1 warning 은 기존 `tests/test_auth.py` 의 `asyncio.get_event_loop` deprecation 으로 본 wave 의 blocker 가 아니다.
@@ -1295,7 +1295,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - 문서 diff 는 본 `docs/refactoring/clean-architecture-wave-history.md` 단일 파일에 한정 (`git diff -- docs/refactoring/clean-architecture-wave-history.md`, `git status --short` 로 확인).
   - 본 wave 동안 push / PR / deploy / 실 외부 호출 0건.
 - Rollback:
-  - Wave 4-Q (문서 전용): `git revert <docs-only commit>` — 본 문서의 Wave 4-Q 기록만 사라지고 다른 저장소 상태는 변하지 않는다 (코드/스키마/계약/보안 정책 영향 0).
+  - Wave 4-Q (문서 전용, 로컬 main 통합 완료): 본 sync 커밋이 있다면 먼저 `git revert <sync commit>` 으로 되돌린 뒤, `git revert -m 1 b50bad8` (구현 커밋만 되돌릴 경우 `git revert 79b3eb1`) — 본 문서의 Wave 4-Q 기록만 사라지고 다른 저장소 상태는 변하지 않는다 (코드/스키마/계약/보안 정책 영향 0).
   - Wave 4-P (코드 변경): `git revert -m 1 d8bf187` (구현 커밋만 되돌릴 경우 `git revert 560a605`).
 - Rationale / Approval log:
   - Wave 4-Q audit: `/tmp/dallo-wave4q-readonly-audit.out.txt`, A/B 결정 검토: `/tmp/dallo-wave4q-ab-decision.out.txt`, 승인 로그: `/tmp/dallo-approval-log-wave4q.md`.
