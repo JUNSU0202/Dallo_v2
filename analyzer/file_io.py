@@ -9,6 +9,10 @@ Wave 4-N: ``BanditRunner`` / ``SemgrepRunner`` 가 직접 호출하던
   - ``write_json(path, payload)``: 부모 디렉토리 자동 생성, UTF-8 텍스트,
     ``indent=2`` + ``ensure_ascii=False`` 옵션을 그대로 보존한다 (현재
     ``json.dump(..., indent=2, ensure_ascii=False)`` 동작과 동일).
+  - ``write_text(path, content)``: 부모 디렉토리 자동 생성, UTF-8 텍스트
+    쓰기. Wave 4-X 에서 ``analyzer/pipeline.py::execute_pipeline`` 의 사용자
+    코드 임시 파일 쓰기 (``open(path, "w", encoding="utf-8")``) 경계를
+    어댑터로 분리하기 위해 추가됐다.
   - ``read_text_lines(path)``: Semgrep snippet enrichment 가 사용하는
     UTF-8 라인 단위 읽기. 예외 swallowing 은 호출자(SemgrepRunner) 수준에서
     유지되며, 본 어댑터는 표준 파일 예외를 그대로 전파한다.
@@ -31,6 +35,11 @@ class FileIO:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    def write_text(self, path: str, content: str) -> None:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
 
     def read_text_lines(self, path: str) -> list[str]:
         with open(path, "r", encoding="utf-8") as f:
