@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-T 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-U 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -1240,6 +1240,45 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
   GitHub **Check Run** 이 뭔지 잠깐 설명한다 — GitHub 의 한 커밋이나 PR 마다 ‘이 커밋에 대해 어떤 자동 검사를 돌렸고 결과가 무엇인지’ 를 GitHub UI 의 Checks 탭에 작은 보고 한 줄로 표시해 주는 단위가 Check Run 이다. 예를 들면 ‘Bandit 정적 분석: 성공 / 실패 / 주의 + 요약 메시지 + 자세히 보기 링크’ 같은 줄을 PR 페이지에서 바로 볼 수 있게 해 준다. GitHub Actions 워크플로 자체가 자동으로 만들어 주는 Check 와 별개로, 외부 도구가 GitHub REST API 를 호출해서 직접 Check Run 을 만들 수도 있다. 휴면 모듈의 `create_check_run` 메서드는 바로 이 ‘외부에서 Check Run 을 만들어 PR 결과를 GitHub UI 에 노출하는’ 미래 기능을 준비해 둔 자산이다. 지금은 호출하지 않지만, 활성화될 때를 대비해 보존한다."
 
+### Wave 4-U — Analyzer pipeline `_build_result` clock seam
+
+- 브랜치: `w4u-build-result-clock`. 본 wave 는 `analyzer/pipeline.py::_build_result` 의 ``datetime.now()`` 경계를 keyword-only ``now`` 인자로 fakeable 화한 마이크로 wave 다. Wave 4-T 가 `api/services/analysis_pipeline.py` 의 잡 ID/잡 메타 빌더에 적용한 동일 패턴을, 분석 결과 직렬화 시점의 ``completed_at`` 채움 경계에 균일 적용한다. 본 wave baseline HEAD 는 `4cc641b merge: integrate Wave 4-T analysis pipeline clock seam`.
+- 주요 파일/영역:
+  - `analyzer/pipeline.py` — ``_build_result(job_id, vuln_reports, patches, elapsed, *, now=None)``. ``now is None`` 분기로 기존 ``datetime.now()`` 호출을 보존. ``execute_pipeline`` 본체와 호출 시그니처는 무변경 — 새 ``now`` 인자는 default ``None`` 이라 기존 caller 가 변경 없이 통과한다.
+  - `tests/test_pipeline_integration.py` — ``TestBuildResultClockSeam`` 클래스 5 케이스: fixed ``now`` 가 ``completed_at`` 을 결정적으로 만든다 / ``now`` 는 keyword-only / 모듈 ``datetime`` monkeypatch 로 default 경로 회귀 검증 / session dict 키 셋·고정 필드·``duration_seconds`` 셰이프 보존 / ``isoformat`` round-trip.
+- 이전 구조 (Wave 4-T post-state): ``_build_result`` 가 inline ``datetime.now().isoformat()`` 호출에 의존했고, 외부에서 시각을 주입할 수단이 없었다. 단위 테스트가 ``analyzer.pipeline.datetime`` 자체를 monkeypatch 하지 않으면 ``completed_at`` 값을 결정적으로 검증할 수 없었다.
+- 문제/위험 (활성화 시):
+  - ``completed_at`` 이 들어가는 자리는 회귀 가드를 붙이기가 어렵다 — fixed ``now`` 가 없으면 테스트가 wall-clock 에 의존하거나 정규식 매칭으로 후퇴.
+  - 같은 모듈 안에서 시각 의존이 inline 으로 박혀 있으면, 후속 wave (예: 결과 직렬화 / 리포트 timestamp 디버깅) 가 시각을 통제하기 위해 또 다시 module-level monkeypatch 를 강요받는다.
+- 변경 (요약):
+  - ``_build_result`` 에 keyword-only ``now: Optional[datetime] = None`` 추가. ``now is None`` 일 때만 ``datetime.now()`` 를 호출 → 운영 동작 무변경.
+  - session dict 의 키 집합 / 고정 값 (``session_id=job_id``, ``repo="dashboard-upload"``, ``pr_number=0``, ``commit_sha="direct-upload"``) / ``duration_seconds = round(elapsed, 2)`` 모두 보존.
+  - ``execute_pipeline`` 의 ``_build_result`` 호출부 무수정 — 새 ``now`` 인자는 default ``None`` 이므로 기존 호출 그대로 통과한다.
+  - ``from typing import Optional`` 과 ``from datetime import datetime`` 은 이미 모듈 상단에 존재해 재사용한다.
+- 클린 아키텍처 적합성: Wave 3-J (sonar polling clock), Wave 4-M (LLM retry sleeper), Wave 4-P (DB ``DateTime`` default clock), Wave 4-T (analysis pipeline service clock) 가 도입한 “시계 경계 fakeable 화” 패턴을, 같은 디렉토리(`analyzer/`) 의 결과 직렬화 시점에 균일 적용한다. 외부 caller 의 의존 그래프나 책임 경계는 변하지 않는다 — ``execute_pipeline`` 은 새 인자를 모르고도 정상 동작한다.
+- 보존된 동작 / 계약 (preserve, 미변경):
+  - ``_build_result`` 반환 dict 의 모든 키 (``session_id``, ``repo``, ``pr_number``, ``commit_sha``, ``branch``, ``summary``, ``vulnerabilities``, ``patches``, ``started_at``, ``completed_at``, ``duration_seconds``) 와 고정 값.
+  - ``completed_at`` 의 ``isoformat()`` 셰이프 (``datetime.fromisoformat`` round-trip 가능).
+  - ``execute_pipeline`` 본체 / 진행 단계 콜백 / temp 파일 처리 / DB 저장 동작 — 본 wave 의 diff 에 등장하지 않는다.
+  - ``shared/schemas.py`` / API / DB / migration / dependency / 워크플로우 / 환경 변수 정책 변경 0.
+- 검증 근거:
+  - Worktree pre-implementation RED: ``tests/test_pipeline_integration.py::TestBuildResultClockSeam -q`` → **4 failed, 1 passed** (`/tmp/dallo-wave4u-red.out.txt`). 실패 사유 분포: ``now`` 키워드 미수용 (``TypeError``) / ``inspect.signature`` 에 ``now`` 부재. 통과 1건은 default 경로가 모듈 레벨 ``datetime`` 을 통과한다는 행동 보존 가드 (현 코드도 이미 모듈 레벨 ``datetime`` import 를 통과하므로 monkeypatch 가 작동).
+  - Worktree targeted: `pytest tests/test_pipeline_integration.py::TestBuildResultClockSeam -q` → **5 passed in 0.03s**.
+  - Worktree targeted (file): `pytest tests/test_pipeline_integration.py -q` → **9 passed in 0.04s** (Wave 4-T post-state 4 → +5 신규 회귀 테스트).
+  - Worktree adjacent: `pytest tests/test_pipeline_integration.py tests/test_api_analysis_pipeline_service.py tests/test_db_clock_seam.py -q` → **37 passed in 0.55s** — clock seam 패밀리 (4-P / 4-T / 4-U) 무영향 확인.
+  - Worktree full: `pytest tests/ -q` → **810 passed in 36.74s** (Wave 4-T post-state 805 → +5 신규 회귀 테스트, 0 warning).
+  - 실 외부 호출 0건. 본 wave 동안 push / PR / deploy / 실 GitHub API / 실 LLM / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출 모두 수행되지 않았다.
+  - 안전 grep: 본 diff 의 추가 라인에 ``os.system(`` / ``shell=True`` / ``eval(`` / ``exec(`` / ``pickle.loads?(`` 0건, 시크릿-유사 ``(api_key|secret|password|token|passwd)\s*=\s*"…"`` 0건.
+- 명시적 비적용 (의도적 비행동):
+  - ``execute_pipeline`` 시그니처 / 호출부 수정 비적용 — 새 ``now`` 인자는 default ``None`` 이라 기존 caller 가 변경 없이 통과.
+  - ``_build_result`` 외 다른 분석 단계 함수 (``_run_static_analysis``, ``_extract_context``, ``_deduplicate``, ``_score_risk``, ``_generate_patches``, ``_validate_syntax``, ``_validate_security``, ``_persist_to_db``) 의 시각/외부 경계 수정 비적용.
+  - 새 의존(예: 별도 clock 모듈) 도입 비적용 — 본 wave 는 시그니처 한 칸만 추가하는 최소 변경.
+  - dependency / lock 파일 변경 비적용.
+  - ``shared/schemas.py`` / API / DB / migration 변경 비적용.
+  - GitHub push / PR / deploy / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 GitHub API 호출 / network 호출 비수행.
+- Rollback (가역성): 본 wave 는 단일 구현 커밋 `refactor(analyzer): add Wave 4-U build result clock seam` 로 구성된다. `git revert <commit>` 로 정확히 되돌리면 `analyzer/pipeline.py::_build_result` 가 Wave 4-T post-state (``now`` 인자 없는 inline ``datetime.now().isoformat()``) 로 돌아가고, ``TestBuildResultClockSeam`` 테스트 클래스가 사라진다. 운영 호출자(``execute_pipeline``) 가 새 ``now`` 인자를 쓰지 않으므로 revert 의 운영 영향은 0 이다.
+- 초보자용 설명: "분석 파이프라인은 마지막에 분석 결과를 하나의 dict 로 묶으면서 ‘이 분석은 언제 끝났는지(``completed_at``)’ 를 기록한다. 기존에는 이 시각을 ``datetime.now()`` 로 직접 읽어 박았기 때문에, 테스트가 ‘만약 분석이 2026년 1월 2일 03:04:05 에 끝났다면 ``completed_at`` 이 정확히 어떤 문자열이어야 하는가?’ 같은 질문을 하려면 모듈 전체의 ``datetime`` 을 통째로 갈아끼우는 무거운 monkeypatch 가 필요했다. Wave 4-U 는 ``_build_result(... , now=...)`` 라는 작은 키워드 구멍을 뚫었다. 평소에는 ``now`` 를 안 넘기면 예전처럼 ``datetime.now()`` 가 호출된다 — 결과 dict 의 키 셋도, ``repo='dashboard-upload'`` 같은 고정 필드도, ``duration_seconds`` 도 한 글자도 바뀌지 않는다. 다만 테스트만은 ``_build_result(..., now=fixed)`` 라고 부르면 시각이 결정적으로 고정되어, ``completed_at`` 이 정확히 어떻게 생겨야 하는지를 ``datetime.fromisoformat`` round-trip 으로까지 깔끔하게 검증할 수 있게 됐다. ``execute_pipeline`` 은 ``now`` 를 알 필요가 없고 기존 호출 그대로 통과하니, 라우터/태스크/외부 caller 코드에는 어떤 후속 작업도 필요 없다."
+
 ### Wave 4-T — Analysis pipeline clock seam
 
 - 브랜치: `w4t-analysis-pipeline-clock`. 본 wave 는 `api/services/analysis_pipeline.py` 의 잡 ID 생성 / 잡 메타 빌더 세 함수의 ``datetime.now()`` 경계를 keyword-only ``now`` 인자로 fakeable 화한 마이크로 wave 다.
@@ -1376,16 +1415,17 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-## 10. 현재 상태 (Wave 4-T 시점)
+## 10. 현재 상태 (Wave 4-U 시점)
 
-- Wave 4-T 는 **분석 파이프라인 서비스 (`api/services/analysis_pipeline.py`)** 의 잡 ID/잡 메타 빌더 세 함수에 fakeable clock seam 을 도입한 마이크로 wave 다 (브랜치 `w4t-analysis-pipeline-clock`). 본 wave baseline HEAD 는 `777e13a merge: integrate Wave 4-S auth test event loop cleanup`.
-- 작업 트리는 `api/services/analysis_pipeline.py` 수정 1건 + `tests/test_api_analysis_pipeline_service.py` 수정 1건 (``TestClockSeam`` 10 케이스 추가) 로 한정된다. `shared/schemas.py` 무변경, `api/routers/` / `analyzer/` / `agent/` / `validator/` / `db/` / `scripts/` / `.github/` / dependency / lock / migration 무변경.
-- 마지막 검증된 결과 (Wave 4-T worktree 기준):
-  - RED-first: `pytest tests/test_api_analysis_pipeline_service.py::TestClockSeam -q` → **7 failed, 3 passed in 0.13s** (`/tmp/dallo-wave4t-red.out.txt`).
-  - Targeted: `pytest tests/test_api_analysis_pipeline_service.py -q` → **23 passed in 0.34s** (Wave 4-S post-state 13 → +10).
-  - Full: `pytest tests/ -q` → **805 passed in 35.94s** (Wave 4-S post-state 795 → +10, 0 warning).
+- Wave 4-U 는 **분석 파이프라인 (`analyzer/pipeline.py`)** 의 ``_build_result`` 헬퍼에 fakeable clock seam 을 도입한 마이크로 wave 다 (브랜치 `w4u-build-result-clock`). 본 wave baseline HEAD 는 `4cc641b merge: integrate Wave 4-T analysis pipeline clock seam`.
+- 작업 트리는 `analyzer/pipeline.py` 수정 1건 + `tests/test_pipeline_integration.py` 수정 1건 (``TestBuildResultClockSeam`` 5 케이스 추가) + `docs/refactoring/clean-architecture-wave-history.md` 갱신 1건으로 한정된다. `shared/schemas.py` 무변경, `api/` / `agent/` / `validator/` / `db/` / `scripts/` / `.github/` / dependency / lock / migration 무변경.
+- 마지막 검증된 결과 (Wave 4-U worktree 기준):
+  - RED-first: `pytest tests/test_pipeline_integration.py::TestBuildResultClockSeam -q` → **4 failed, 1 passed in 0.08s** (`/tmp/dallo-wave4u-red.out.txt`).
+  - Targeted: `pytest tests/test_pipeline_integration.py -q` → **9 passed in 0.04s** (Wave 4-T post-state 4 → +5).
+  - Adjacent (clock seam 패밀리): `pytest tests/test_pipeline_integration.py tests/test_api_analysis_pipeline_service.py tests/test_db_clock_seam.py -q` → **37 passed in 0.55s**.
+  - Full: `pytest tests/ -q` → **810 passed in 36.74s** (Wave 4-T post-state 805 → +5, 0 warning).
 - 본 wave 동안 push / PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 GitHub API 호출 / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출 모두 수행되지 않았다.
-- Rollback (Wave 4-T): `git revert <Wave 4-T 구현 커밋>` 로 정확히 되돌리면 `api/services/analysis_pipeline.py` 의 세 함수가 Wave 4-S post-state (``now`` 인자 없는 inline ``datetime.now()``) 로 돌아가고 ``TestClockSeam`` 클래스가 사라진다. 운영 caller 는 새 인자를 쓰지 않으므로 revert 의 운영 영향 0.
+- Rollback (Wave 4-U): `git revert <Wave 4-U 구현 커밋>` 로 정확히 되돌리면 `analyzer/pipeline.py::_build_result` 가 Wave 4-T post-state (``now`` 인자 없는 inline ``datetime.now().isoformat()``) 로 돌아가고 ``TestBuildResultClockSeam`` 클래스가 사라진다. 운영 caller(``execute_pipeline``) 는 새 인자를 쓰지 않으므로 revert 의 운영 영향 0.
 
 ## 10.bis 이전 상태 (Wave 4-R 시점, 참고)
 

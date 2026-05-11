@@ -5,9 +5,13 @@
 LLM 호출은 mock으로 대체.
 """
 
+import inspect
 import os
 import sys
+from datetime import datetime
 from unittest.mock import patch, MagicMock
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -120,3 +124,115 @@ class TestPipelineOrder:
         assert len(result.representatives) == 0
 
         score_vulnerabilities([])  # no error
+
+
+# ============================================================
+# Wave 4-U: _build_result fakeable clock seam
+# ============================================================
+
+class TestBuildResultClockSeam:
+    """``analyzer.pipeline._build_result`` 의 ``datetime.now()`` 경계를
+    keyword-only ``now`` 인자로 fakeable 화한 회귀 가드.
+
+    Wave 4-P (DB clock seam) / 4-T (analysis pipeline clock seam) 와 동일한
+    패턴: ``now is None`` 일 때만 ``datetime.now()`` 를 호출 → 운영 동작 무변경,
+    테스트는 ``now=fixed`` 로 ``completed_at`` 을 결정적으로 검증.
+    """
+
+    def _empty_args(self):
+        """``_build_result`` 호출에 사용할 최소 인자 집합."""
+        return dict(
+            job_id="job_clock_seam",
+            vuln_reports=[],
+            patches=[],
+            elapsed=1.23,
+        )
+
+    def test_build_result_uses_fixed_now(self):
+        """``now=fixed`` 주입 시 session dict 의 ``completed_at`` 이
+        ``fixed.isoformat()`` 으로 결정된다."""
+        from analyzer.pipeline import _build_result
+
+        fixed = datetime(2026, 1, 2, 3, 4, 5)
+        result = _build_result(**self._empty_args(), now=fixed)
+
+        assert result["completed_at"] == fixed.isoformat(), (
+            f"fixed now 가 completed_at 에 반영되지 않음: {result['completed_at']}"
+        )
+
+    def test_build_result_now_is_keyword_only(self):
+        """``now`` 는 keyword-only 이어야 한다 — positional 호출은 ``TypeError``."""
+        from analyzer.pipeline import _build_result
+
+        sig = inspect.signature(_build_result)
+        assert "now" in sig.parameters, "_build_result 에 now 인자가 없다"
+        assert (
+            sig.parameters["now"].kind is inspect.Parameter.KEYWORD_ONLY
+        ), "now 는 keyword-only 이어야 한다"
+
+        fixed = datetime(2026, 1, 2, 3, 4, 5)
+        # positional 호출은 거부되어야 한다
+        with pytest.raises(TypeError):
+            _build_result(
+                "job_clock_seam", [], [], 1.23, fixed,  # type: ignore[misc]
+            )
+
+    def test_build_result_default_path_uses_module_datetime(self, monkeypatch):
+        """``now`` 미주입 시 모듈 레벨 ``datetime.now()`` 가 그대로 사용된다.
+
+        ``analyzer.pipeline.datetime`` 을 fake 로 교체해 default 경로가 여전히
+        module-level import 를 통과함을 회귀 검증한다.
+        """
+        import analyzer.pipeline as pipeline_mod
+
+        class _FakeDT:
+            @staticmethod
+            def now():
+                return datetime(2026, 6, 7, 8, 9, 10)
+
+        monkeypatch.setattr(pipeline_mod, "datetime", _FakeDT)
+        result = pipeline_mod._build_result(**self._empty_args())
+
+        assert result["completed_at"] == "2026-06-07T08:09:10", (
+            f"default 경로 datetime.now 회귀: {result['completed_at']}"
+        )
+
+    def test_build_result_preserves_existing_keys_and_shape(self):
+        """``now`` 주입 여부와 무관하게 session dict 의 키 셋과
+        ``duration_seconds`` 셰이프가 보존된다."""
+        from analyzer.pipeline import _build_result
+
+        fixed = datetime(2026, 1, 2, 3, 4, 5)
+        result = _build_result(**self._empty_args(), now=fixed)
+
+        expected_keys = {
+            "session_id", "repo", "pr_number", "commit_sha", "branch",
+            "summary", "vulnerabilities", "patches",
+            "started_at", "completed_at", "duration_seconds",
+        }
+        assert expected_keys.issubset(result.keys()), (
+            f"session dict 키 회귀: 누락={expected_keys - set(result.keys())}"
+        )
+        # Wave 4-T 이전과 동일한 고정 필드들
+        assert result["session_id"] == "job_clock_seam"
+        assert result["repo"] == "dashboard-upload"
+        assert result["pr_number"] == 0
+        assert result["commit_sha"] == "direct-upload"
+        # elapsed 가 round(..., 2) 로 그대로 전달되어야 한다
+        assert result["duration_seconds"] == 1.23
+        # 빈 입력 → summary total 0
+        assert result["summary"]["total"] == 0
+        assert result["vulnerabilities"] == []
+        assert result["patches"] == []
+
+    def test_build_result_isoformat_round_trip(self):
+        """``completed_at`` 은 fixed ``now`` 의 ``isoformat()`` 과 정확히 동치이며,
+        ``datetime.fromisoformat`` 으로 다시 원래 ``datetime`` 으로 round-trip 한다."""
+        from analyzer.pipeline import _build_result
+
+        fixed = datetime(2026, 12, 31, 23, 59, 58, 123456)
+        result = _build_result(**self._empty_args(), now=fixed)
+
+        assert result["completed_at"] == fixed.isoformat()
+        # round-trip: 문자열 → datetime 으로 정확히 복원되어야 한다
+        assert datetime.fromisoformat(result["completed_at"]) == fixed

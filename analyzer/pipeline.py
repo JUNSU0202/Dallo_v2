@@ -248,9 +248,15 @@ def _validate_security(patches: list, vuln_reports: list, lang: str, filename: s
 
 
 def _build_result(
-    job_id: str, vuln_reports: list, patches: list, elapsed: float
+    job_id: str, vuln_reports: list, patches: list, elapsed: float,
+    *, now: Optional[datetime] = None,
 ) -> dict:
-    """분석 결과를 세션 딕셔너리로 조립합니다."""
+    """분석 결과를 세션 딕셔너리로 조립합니다.
+
+    ``now`` 미주입 시 모듈 ``datetime.now()`` 를 호출하므로 운영 동작은 그대로다
+    (Wave 4-U fakeable clock seam — 테스트가 ``completed_at`` 을 결정적으로
+    검증할 수 있도록 keyword-only ``now`` 인자를 추가).
+    """
     from shared.schemas import AnalysisSession
 
     session = AnalysisSession(
@@ -262,7 +268,9 @@ def _build_result(
         patches=patches,
     )
     session.update_stats()
-    session.completed_at = datetime.now().isoformat()
+    if now is None:
+        now = datetime.now()
+    session.completed_at = now.isoformat()
     session.duration_seconds = round(elapsed, 2)
     return session.to_dict()
 
