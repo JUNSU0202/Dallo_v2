@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-V 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-W 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -33,7 +33,7 @@ Dallo 의 리팩터링은 **세 단계의 큰 흐름** 으로 진행되었다.
 | --- | --- | --- | --- |
 | **Wave 2 (A~S, 19 wave)** | API/라우터/서비스/부트스트랩/경로 안정화 | 단일 파일에 뭉친 책임을 라우터·서비스 계층으로 분리, 부트스트랩 부수효과 정리, 경로 안전성 강화 | `api/server.py` 거대 파일을 라우터/서비스 단위로 분해 |
 | **Wave 3 (A~J, 11 wave)** | analyzer/외부 의존 경계 추출 | subprocess·HTTP·시간 의존성을 어댑터(seam)로 분리, fakeable 테스트 가능한 구조로 전환 | `pip-audit`, Bandit, Semgrep, Sonar scanner, Sonar HTTP, polling clock 까지 모두 외부 경계 격리 |
-| **Wave 4 (A~V, 22 wave; 4-Q 는 문서 전용, 4-S 는 테스트 전용)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam + agent LLM retry sleeper seam + analyzer/validator 파일 I/O seam + DB clock seam + dormant GitHub client deferred 결정 기록 + dormant GitHub client check run HTTP seam + auth test event loop helper 정리 + analysis pipeline clock seam | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam, ``DalloAgent`` LLM retry sleeper DI seam, ``BanditRunner``/``SemgrepRunner`` 파일 I/O 어댑터, ``TestRunner``/``SecurityChecker``/``SyntaxChecker`` 파일 쓰기 어댑터, DB ``DateTime`` default clock seam, dormant ``integrations/github_client.py`` HTTP seam 의 Option A (DOC_ONLY) 결정 기록 (코드 변경 0), dormant ``integrations/github_client.py`` 에 lazy ``_default_http_client()`` + keyword ``http_client`` 주입 + explicit ``timeout`` + 정규화된 ``{status,message,data}`` 반환 + token 비누출 회귀 가드 도입 (Check Run 포함, 운영 wiring 은 deferred) | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 + LLM retry 시계 경계 fakeable 화 + analyzer/validator 파일 시스템 경계 fakeable 화 + DB 시간 생성 경계 fakeable/deprecation-free 화 + 휴면 모듈의 활성화 전 deferred 상태를 audit 증거와 함께 명시 + 휴면 모듈 활성화 직전 위험 (timeout 부재 / fake seam 부재 / raw raise_for_status 전파 / token 누출 가능 메시지) 을 코드 차원에서 선제 차단 |
+| **Wave 4 (A~W, 23 wave; 4-Q 는 문서 전용, 4-S 는 테스트 전용)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam + agent LLM retry sleeper seam + analyzer/validator 파일 I/O seam + DB clock seam + dormant GitHub client deferred 결정 기록 + dormant GitHub client check run HTTP seam + auth test event loop helper 정리 + analysis pipeline clock seam | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam, ``DalloAgent`` LLM retry sleeper DI seam, ``BanditRunner``/``SemgrepRunner`` 파일 I/O 어댑터, ``TestRunner``/``SecurityChecker``/``SyntaxChecker`` 파일 쓰기 어댑터, DB ``DateTime`` default clock seam, dormant ``integrations/github_client.py`` HTTP seam 의 Option A (DOC_ONLY) 결정 기록 (코드 변경 0), dormant ``integrations/github_client.py`` 에 lazy ``_default_http_client()`` + keyword ``http_client`` 주입 + explicit ``timeout`` + 정규화된 ``{status,message,data}`` 반환 + token 비누출 회귀 가드 도입 (Check Run 포함, 운영 wiring 은 deferred) | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 + LLM retry 시계 경계 fakeable 화 + analyzer/validator 파일 시스템 경계 fakeable 화 + DB 시간 생성 경계 fakeable/deprecation-free 화 + 휴면 모듈의 활성화 전 deferred 상태를 audit 증거와 함께 명시 + 휴면 모듈 활성화 직전 위험 (timeout 부재 / fake seam 부재 / raw raise_for_status 전파 / token 누출 가능 메시지) 을 코드 차원에서 선제 차단 |
 
 핵심 원칙은 다음 네 가지다.
 
@@ -1240,6 +1240,54 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
   GitHub **Check Run** 이 뭔지 잠깐 설명한다 — GitHub 의 한 커밋이나 PR 마다 ‘이 커밋에 대해 어떤 자동 검사를 돌렸고 결과가 무엇인지’ 를 GitHub UI 의 Checks 탭에 작은 보고 한 줄로 표시해 주는 단위가 Check Run 이다. 예를 들면 ‘Bandit 정적 분석: 성공 / 실패 / 주의 + 요약 메시지 + 자세히 보기 링크’ 같은 줄을 PR 페이지에서 바로 볼 수 있게 해 준다. GitHub Actions 워크플로 자체가 자동으로 만들어 주는 Check 와 별개로, 외부 도구가 GitHub REST API 를 호출해서 직접 Check Run 을 만들 수도 있다. 휴면 모듈의 `create_check_run` 메서드는 바로 이 ‘외부에서 Check Run 을 만들어 PR 결과를 GitHub UI 에 노출하는’ 미래 기능을 준비해 둔 자산이다. 지금은 호출하지 않지만, 활성화될 때를 대비해 보존한다."
 
+### Wave 4-W — LLMCache memory-fallback clock seam
+
+- 브랜치: `w4w-llm-cache-clock-seam`. 본 wave 는 `agent/cache.py::LLMCache` 의 메모리 fallback 만기 비교/기록 경계(``time.time()``) 를 keyword-only ``clock: Optional[Callable[[], float]] = None`` 인자로 fakeable 화한 마이크로 wave 다. Wave 3-J (Sonar polling clock) / Wave 4-M (LLM retry sleeper) / Wave 4-P (DB ``DateTime`` default clock) / Wave 4-T (analysis pipeline service clock) / Wave 4-U (`_build_result` ``completed_at`` clock) / Wave 4-V (`execute_pipeline` elapsed clock) 가 도입한 “시계 경계 fakeable 화” 패턴을, ``agent/`` 디렉토리의 LLM 응답 캐시 메모리 fallback 만기 비교 시점에 균일 적용한다. 본 wave baseline HEAD 는 `580efeb merge: integrate Wave 4-V execute pipeline clock seam`.
+- 주요 파일/영역:
+  - `agent/cache.py` — ``LLMCache.__init__(..., *, clock: Optional[Callable[[], float]] = None)``. ``clock is None`` 분기로 기존 ``time.time`` 호출을 보존(``self._clock = time.time if clock is None else clock``). ``get()`` 의 메모리 fallback 만기 비교(``self._clock() < entry["expires"]``) 와 ``set()`` 의 메모리 fallback 만기 기록(``"expires": self._clock() + self._ttl``) 두 측정 시점만 동일한 ``self._clock`` 을 통과한다. Redis 경로 (``setex(key, self._ttl, serialized)`` / ``get(key)``) 와 TTL 정책은 무변경 — Redis 의 만기는 서버측 TTL 이 책임지므로 클라이언트 시계 의존이 없다. ``_make_cache_key`` / ``get_metrics`` / hits·misses·saves 메트릭 / Redis 연결 부트스트랩 / ImportError·연결 실패 fallback 분기 모두 무변경.
+  - `tests/test_llm_cache_clock_seam.py` — ``TestLLMCacheClockSeam`` 7개 신규 테스트: ``clock`` 은 keyword-only/default ``None`` 시그니처 회귀 / fixed clock 주입 시 메모리 fallback 만기 직전·직후 hit/miss 동작이 결정적 / fake clock 주입 시 모듈 ``time.time`` 이 호출되지 않음(monkeypatch 로 boom-stub) / default 경로는 여전히 모듈 ``time.time`` 호출 / ``get()`` / ``set()`` public 시그니처·반환 셰이프 보존 / 메트릭 카운터 동작 보존 / Redis 분기는 ``self._clock`` 을 호출하지 않음(fake 가 미사용) / TTL 값 보존 / Redis 미가용 시 fallback 동작 보존.
+- 이전 구조 (Wave 4-V post-state): ``LLMCache`` 본체가 메모리 fallback 분기에서 직접 ``time.time()`` 을 두 곳(``get()`` 의 만기 비교, ``set()`` 의 만기 기록) 에서 호출했고, 외부에서 wall-clock 을 주입할 수단이 없었다. 단위 테스트가 ``agent.cache.time.time`` 자체를 monkeypatch 하지 않으면 “TTL 직전엔 hit, 직후엔 miss” 같은 만기 경계 동작을 결정적으로 검증할 수 없었다.
+- 문제/위험 (활성화 시):
+  - TTL 만기 경계(``expires`` ± 1 초) 가 들어가는 자리는 회귀 가드를 붙이기가 어렵다 — fixed clock 이 없으면 테스트가 wall-clock 에 의존하거나 ``time.sleep(>=ttl)`` 으로 실제 대기해야 한다.
+  - 같은 모듈 안에서 시간 의존이 inline 으로 박혀 있으면, 후속 wave (예: 캐시 만기 정책 디버깅 / TTL 단계별 메트릭 / hit rate 시계열 분석) 가 다시 module-level monkeypatch 를 강요받는다.
+  - Redis 가 가용하지 않은 환경(CI, 로컬 dev, ImportError) 에서 메모리 fallback 만기 동작이 비결정적이면, hit/miss 카운터를 활용한 회귀 가드를 안정적으로 작성하기 어렵다.
+- 변경 (요약):
+  - ``LLMCache.__init__`` 에 keyword-only ``clock: Optional[Callable[[], float]] = None`` 추가. ``clock is None`` 일 때만 ``time.time`` 을 reference 로 사용 → 운영 동작 무변경.
+  - ``self._clock: Callable[[], float] = time.time if clock is None else clock`` 으로 인스턴스 attribute 에 보관. ``get()`` 의 ``entry and self._clock() < entry["expires"]`` 비교와 ``set()`` 의 ``"expires": self._clock() + self._ttl`` 기록 두 측정 시점이 동일 callable 만 통과하도록 통일.
+  - Redis 경로 (``setex`` / ``get``) / TTL 상수 (``DEFAULT_TTL = 7 * 24 * 3600``) / ``_make_cache_key`` SHA-256 해싱 / ``get_metrics`` 산정 / ``_metrics`` 모듈 dict / Redis 부트스트랩의 ``CELERY_BROKER_URL`` 파싱 + DB 2 사용 + 2초 connect timeout / ImportError·connection-failure fallback 메시지 모두 보존.
+  - ``from typing import Callable, Optional`` / ``import time`` 은 이미 모듈 상단에 존재해 재사용한다.
+- 클린 아키텍처 적합성: Wave 3-J / 4-M / 4-P / 4-T / 4-U / 4-V 가 도입한 “시계 경계 fakeable 화” 패턴을, 같은 디렉토리(``agent/``) 의 메모리 fallback 만기 비교 시점에 균일 적용한다. ``LLMCache`` 는 외부 의존(Redis) 어댑터로서의 단일 책임을 유지하면서, 클라이언트 시계 경계 한 곳만 fakeable seam 으로 분리한다 — Redis 가용 경로는 서버측 TTL 에 위임하므로 ``self._clock`` 을 호출하지 않고, 메모리 fallback 만 클라이언트 시계에 의존한다. 외부 caller (``DalloAgent`` / LLM 호출 경로) 의 의존 그래프나 책임 경계는 변하지 않는다 — ``get()`` / ``set()`` 의 public 시그니처와 반환 셰이프는 그대로다.
+- 보존된 동작 / 계약 (preserve, 미변경):
+  - ``LLMCache.__init__`` 의 기존 positional 인자 (``ttl``) 와 default 값.
+  - ``get(file_content, rule_id, context)`` / ``set(file_content, rule_id, context, response)`` public 시그니처 와 반환 셰이프(``Optional[dict]`` / ``None``).
+  - Redis 경로의 ``setex(key, self._ttl, serialized)`` / ``get(key)`` 호출 시그니처와 TTL 정책 — Redis 만기는 서버측 TTL 이 책임지므로 클라이언트 시계 의존 없음.
+  - ``_make_cache_key`` 의 ``dallo:llm_cache:<sha256>`` 키 셰이프, ``ensure_ascii=False`` JSON 직렬화, ``DEFAULT_TTL = 7 * 24 * 3600`` 상수.
+  - ``_metrics`` 모듈 dict (``hits`` / ``misses`` / ``saves``) 카운터 증가 시점 / ``get_metrics`` 반환 dict 의 키 셋 (``hits`` / ``misses`` / ``saves`` / ``total`` / ``hit_rate_pct``) 과 산식 (``round(hit_rate, 1)``).
+  - Redis 부트스트랩 (``CELERY_BROKER_URL`` 파싱 → ``/2`` rewrite → ``socket_connect_timeout=2`` → ``ping()``) / ImportError·connection-failure 시 fallback 분기와 한국어 로그 메시지.
+  - ``shared/schemas.py`` / API / DB / migration / dependency / 워크플로우 / 환경 변수 정책 변경 0.
+- 검증 근거:
+  - Worktree pre-implementation RED: ``tests/test_llm_cache_clock_seam.py -q`` → **7 failed** (구현 전). 실패 사유 분포: ``clock`` 키워드 미수용 (``TypeError``) / ``inspect.signature`` 에 ``clock`` 부재 / 메모리 fallback 만기 비교가 module-level ``time.time`` 만 통과 / fake clock 주입이 무시됨. 회귀 가드가 실제로 baseline 결함을 잡는다는 사실을 증명.
+  - Worktree targeted (combined with `tests/test_cache_batch.py` 기존 회귀): ``pytest tests/test_llm_cache_clock_seam.py tests/test_cache_batch.py -q`` → **17 passed in 0.17s**.
+  - Worktree cache 키워드: ``pytest tests/ -q -k cache`` → **22 passed, 801 deselected in 0.92s** — cache 계열 회귀 무영향 확인.
+  - Worktree full: ``pytest tests/ -q`` → **823 passed in 34.87s** (Wave 4-V baseline 816 에서 신규 테스트 7개가 추가되어 823 passed, 0 warning).
+  - Fake-smoke (실 외부 호출 없이 in-process 검증): default 경로 / fake clock 주입 경로 / Redis 미가용 fallback 경로 모두 통과 — ``WAVE4W_LLM_CACHE_SMOKE_PASS``. 실 LLM / 실 Redis / 실 DB / 실 GitHub API / network 호출 0건.
+  - Import deprecation smoke: ``WAVE4W_IMPORT_DEPRECATION_SMOKE_PASS`` — 본 wave 가 도입한 새 시그니처가 ``agent.cache`` 모듈 import 시 deprecation/SyntaxWarning 을 발생시키지 않음 확인.
+  - 독립 리뷰: APPROVED — blocker 0건, 시그니처/시그너처 외 차이 없음, Redis 경로와 메모리 fallback 의 시계 의존 분리 확인, ``get()``/``set()`` public 시그니처·반환 셰이프 불변 확인.
+  - 안전 grep: 본 diff 의 추가 라인에 ``os.system(`` / ``shell=True`` / ``eval(`` / ``exec(`` / ``pickle.loads?(`` 0건, 시크릿-유사 ``(api_key|secret|password|token|passwd)\s*=\s*"…"`` 0건. ``agent/cache.py`` 본문 직접 ``time.time(`` 호출 스캔도 clean — 모든 메모리 fallback 시계 호출이 ``self._clock()`` 만 통과한다는 사실을 정적으로 확인.
+  - Production danger scan subset: ``shell=True`` / ``os.system`` / ``subprocess.*`` 직접 호출 / raw ``open(...)`` 쓰기 / 토큰 누출 가능 로그 / 추가 라인 secret-like literal 모두 0건.
+  - 실 외부 호출 0건. 본 wave 동안 push / PR / deploy / production DB / 실 GitHub API / 실 LLM / 실 Redis / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출 모두 수행되지 않았다.
+- 명시적 비적용 (의도적 비행동):
+  - Redis 경로의 ``setex`` / ``get`` 시그니처·TTL 정책 수정 비적용 — Redis 만기는 서버측 TTL 이 책임지므로 클라이언트 시계 seam 의 범위 밖이다.
+  - ``get()`` / ``set()`` public 시그니처·반환 셰이프 수정 비적용 — 새 ``clock`` 인자는 default ``None`` 이라 기존 caller 가 변경 없이 통과.
+  - ``_make_cache_key`` / ``get_metrics`` / ``_metrics`` 카운터 / Redis 부트스트랩 / ImportError·connection-failure fallback 분기 수정 비적용.
+  - ``DalloAgent`` / LLM 호출 경로 / 캐시 caller 의 호출부 수정 비적용 — 새 ``clock`` 인자는 ``LLMCache.__init__`` keyword-only 라 기존 ``LLMCache(ttl=...)`` 호출이 그대로 통과.
+  - 새 의존(예: 별도 clock 모듈 / monotonic 정책 강제) 도입 비적용 — 본 wave 는 시그니처 한 칸 + 두 측정점 1줄씩 추가하는 최소 변경.
+  - dependency / lock 파일 변경 비적용.
+  - ``shared/schemas.py`` / API / DB / migration 변경 비적용.
+  - GitHub push / PR / deploy / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 GitHub API 호출 / 실 Redis 호출 / production DB / network 호출 비수행.
+- Rollback (가역성): 본 wave 는 단일 구현 커밋 `8cac01f refactor(agent): add Wave 4-W LLMCache clock seam` 로 구성된다. 본 wave 가 로컬 ``main`` 으로 머지된 이후의 revert 초안은 `git revert -m 1 <wave4w_merge_commit>` 이다 (구현 커밋만 되돌릴 경우 `git revert 8cac01f`). revert 시 `agent/cache.py::LLMCache.__init__` 가 Wave 4-V post-state (``clock`` 인자 없는 inline ``time.time()`` 두 호출) 로 돌아가고 ``tests/test_llm_cache_clock_seam.py`` 가 사라진다. 운영 caller (``DalloAgent`` / LLM 호출 경로) 가 새 ``clock`` 인자를 쓰지 않으므로 revert 의 운영 영향은 0 이다. Wave 4-V 의 ``execute_pipeline`` ``clock`` seam, Wave 4-U 의 ``_build_result`` ``now`` seam, Wave 4-T 의 ``api/services/analysis_pipeline.py`` clock seam 은 본 wave 의 revert 와 무관하게 그대로 유지된다.
+- 초보자용 설명: "LLM 응답 캐시는 같은 코드 + 같은 룰 + 같은 문맥에 대해 비싼 LLM 호출을 또 안 하려고 ‘이 답을 며칠간 기억해 두자’ 하는 메모장이다. 평소엔 Redis(외부 빠른 메모장 서버) 가 ‘7일 뒤에 자동으로 잊어버리기’ 를 맡아 주지만, Redis 가 없는 환경(개발 중이거나 CI 같은 곳) 에서는 캐시가 파이썬 메모리 dict 로 fallback 한다. 이 fallback 경로에서는 ‘지금 시간 < 만기 시간?’ 같은 비교를 직접 해야 하는데, 기존에는 이 비교에 ``time.time()`` 을 박아 둬서, 테스트가 ‘TTL 만기 1초 전에는 hit 이 나야 하고 1초 후에는 miss 가 나야 한다’ 같은 질문을 하려면 모듈의 ``time.time`` 자체를 통째로 갈아끼우는 무거운 monkeypatch 가 필요했다. Wave 4-W 는 ``LLMCache(ttl=..., clock=...)`` 라는 작은 키워드 구멍을 뚫었다. 평소에는 ``clock`` 을 안 넘기면 예전처럼 ``time.time()`` 이 호출된다 — ``get()`` / ``set()`` 시그니처도, 7일 TTL 도, Redis 분기도, 히트/미스 카운터도 한 글자도 바뀌지 않는다. 다만 테스트만은 ``LLMCache(ttl=10, clock=fake_clock)`` 처럼 fake 시계를 끼우면 ‘fake clock 을 9.9 로 두면 hit, 10.1 로 두면 miss’ 가 정확히 검증된다. Redis 가 있는 환경에서는 서버측 TTL 이 만기를 책임지므로 ``self._clock`` 이 한 번도 안 불리고, Redis 없는 fallback 경로에서만 fake clock 이 의미를 갖는다 — 두 경로의 책임이 깔끔하게 갈라진다. 운영 호출자(``DalloAgent``) 는 ``clock`` 을 알 필요가 없고 기존 호출 그대로 통과하니, 호출자 코드에는 어떤 후속 작업도 필요 없다."
+
 ### Wave 4-V — Analyzer pipeline `execute_pipeline` elapsed clock seam
 
 - 브랜치: `w4v-execute-pipeline-clock`. 본 wave 는 `analyzer/pipeline.py::execute_pipeline` 의 elapsed 측정용 ``time.time()`` 경계를 keyword-only ``clock: Optional[Callable[[], float]] = None`` 인자로 fakeable 화한 마이크로 wave 다. Wave 4-U 가 같은 모듈의 ``_build_result`` 시각 직렬화 경계(``datetime.now()``) 에 적용한 동일 패턴을, 분석 전체 소요 시간 측정(``start_time``/``elapsed``) 경계에 균일 적용한다. 본 wave baseline HEAD 는 `1b49e12 merge: integrate Wave 4-U build result clock seam`.
@@ -1461,20 +1509,21 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-## 10. 현재 상태 (Wave 4-V 시점)
+## 10. 현재 상태 (Wave 4-W 시점)
 
-- Wave 4-V 는 **분석 파이프라인 (`analyzer/pipeline.py`)** 의 ``execute_pipeline`` elapsed 측정 경계에 fakeable clock seam 을 도입한 마이크로 wave 다 (브랜치 `w4v-execute-pipeline-clock`). 본 wave baseline HEAD 는 `1b49e12 merge: integrate Wave 4-U build result clock seam`. Wave 4-U 가 같은 모듈의 ``_build_result`` ``completed_at`` (datetime) 경계에 도입한 seam 과 직교한다 — 본 wave 는 elapsed wall-clock(``time.time()``) 만 다룬다.
-- 작업 트리는 `analyzer/pipeline.py` 수정 1건 + `tests/test_pipeline_integration.py` 수정 1건 (``TestExecutePipelineClockSeam`` 6 케이스 추가) + `docs/refactoring/clean-architecture-wave-history.md` 갱신 1건으로 한정된다. `shared/schemas.py` 무변경, `api/` / `agent/` / `validator/` / `db/` / `scripts/` / `.github/` / dependency / lock / migration 무변경.
-- 마지막 검증된 결과 (Wave 4-V worktree 기준):
-  - RED-first: `pytest tests/test_pipeline_integration.py::TestExecutePipelineClockSeam -q` → **4 failed, 2 passed** (`/tmp/dallo-wave4v-red.out.txt`).
-  - Targeted (class): `pytest tests/test_pipeline_integration.py::TestExecutePipelineClockSeam -q` → **6 passed**.
-  - Targeted (file): `pytest tests/test_pipeline_integration.py -q` → **15 passed** (Wave 4-U post-state 9 → +6).
-  - Adjacent (clock seam 패밀리): `pytest tests/test_pipeline_integration.py tests/test_api_analysis_pipeline_service.py tests/test_db_clock_seam.py -q` → **43 passed** (Wave 4-U post-state 37 → +6).
-  - Broader (analyzer pipeline 인접): `pytest tests/test_pipeline_integration.py tests/test_pipeline_*.py -q` → **33 passed**.
-  - Full: `pytest tests/ -q` → **816 passed** (Wave 4-U post-state 810 → +6, 0 warning).
-  - 독립 리뷰: APPROVED — 두 seam 직교성 / round(2) 산술 불변 확인.
-- 본 wave 동안 push / PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 GitHub API 호출 / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출 모두 수행되지 않았다.
-- Rollback (Wave 4-V): `git revert b15b84c` 로 정확히 되돌리면 `analyzer/pipeline.py::execute_pipeline` 가 Wave 4-U post-state (``clock`` 인자 없는 inline ``time.time()`` 두 호출) 로 돌아가고 ``TestExecutePipelineClockSeam`` 클래스가 사라진다. 운영 호출자(라우터/태스크/Dashboard 업로드) 는 새 ``clock`` 인자를 쓰지 않으므로 revert 의 운영 영향 0. Wave 4-U 의 ``_build_result`` ``now`` seam 은 본 wave 의 revert 와 무관하게 그대로 유지된다.
+- Wave 4-W 는 **LLM 응답 캐시 (`agent/cache.py`)** 의 메모리 fallback 만기 비교/기록 경계에 fakeable clock seam 을 도입한 마이크로 wave 다 (브랜치 `w4w-llm-cache-clock-seam`). 본 wave baseline HEAD 는 `580efeb merge: integrate Wave 4-V execute pipeline clock seam`. Redis 가용 경로의 ``setex`` / ``get`` / 서버측 TTL 정책은 본 wave 와 직교한다 — 본 wave 는 메모리 fallback 분기의 ``self._clock()`` 두 호출 시점만 다룬다.
+- 작업 트리는 `agent/cache.py` 수정 1건 + `tests/test_llm_cache_clock_seam.py` 신규 1건 (``TestLLMCacheClockSeam`` 7개 신규 테스트 추가) + `docs/refactoring/clean-architecture-wave-history.md` 갱신 1건으로 한정된다. `shared/schemas.py` 무변경, `api/` / `analyzer/` / `validator/` / `db/` / `scripts/` / `.github/` / dependency / lock / migration 무변경.
+- 마지막 검증된 결과 (Wave 4-W worktree 기준):
+  - RED-first: `pytest tests/test_llm_cache_clock_seam.py -q` → **7 failed** (구현 전).
+  - Targeted (combined with `tests/test_cache_batch.py` 기존 회귀): `pytest tests/test_llm_cache_clock_seam.py tests/test_cache_batch.py -q` → **17 passed in 0.17s**.
+  - Cache 키워드: `pytest tests/ -q -k cache` → **22 passed, 801 deselected in 0.92s**.
+  - Full: `pytest tests/ -q` → **823 passed in 34.87s** (Wave 4-V baseline 816 에서 신규 테스트 7개가 추가되어 823 passed, 0 warning).
+  - Fake-smoke: ``WAVE4W_LLM_CACHE_SMOKE_PASS`` — default 경로 / fake clock 주입 경로 / Redis 미가용 fallback 경로 모두 통과.
+  - Import deprecation smoke: ``WAVE4W_IMPORT_DEPRECATION_SMOKE_PASS``.
+  - 독립 리뷰: APPROVED — blocker 0건, Redis 경로와 메모리 fallback 의 시계 의존 분리 / ``get()``/``set()`` public 시그니처·반환 셰이프 불변 확인.
+  - 정적 안전 grep: 추가 라인 secret-like / danger 호출 0건, `agent/cache.py` 본문 직접 ``time.time(`` 호출 스캔 clean, production danger scan subset clean.
+- 본 wave 동안 push / PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 GitHub API 호출 / 실 Redis 호출 / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출 모두 수행되지 않았다.
+- Rollback (Wave 4-W): 본 wave 가 로컬 ``main`` 으로 머지된 이후 revert 초안은 `git revert -m 1 <wave4w_merge_commit>` (구현 커밋만 되돌릴 경우 `git revert 8cac01f`). revert 시 `agent/cache.py::LLMCache.__init__` 가 Wave 4-V post-state (``clock`` 인자 없는 inline ``time.time()`` 두 호출) 로 돌아가고 ``tests/test_llm_cache_clock_seam.py`` 가 사라진다. 운영 caller (``DalloAgent`` / LLM 호출 경로) 가 새 ``clock`` 인자를 쓰지 않으므로 revert 의 운영 영향 0. Wave 4-V 의 ``execute_pipeline`` ``clock`` seam, Wave 4-U 의 ``_build_result`` ``now`` seam 은 본 wave 의 revert 와 무관하게 그대로 유지된다.
 
 ## 10.bis 이전 상태 (Wave 4-R 시점, 참고)
 
@@ -1529,4 +1578,4 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-*문서 버전: Wave 4-T 시점 (2026-05-11). Wave 4-T 는 `api/services/analysis_pipeline.py` 의 ``make_job_id`` / ``build_initial_job_meta`` / ``build_upload_job_meta`` 세 함수에 keyword-only ``now: Optional[datetime] = None`` fakeable clock seam 을 도입한 마이크로 wave 다 (``TestClockSeam`` 10 케이스 신규). default ``None`` 분기로 운영 동작 무변경 — 잡 ID 셰이프 / 잡 메타 키 셋 / 라우터 caller 모두 미수정. `shared/schemas.py` 무변경. 머지/원격 push/PR/deploy/실 외부 호출 미수행.*
+*문서 버전: Wave 4-W 시점 (2026-05-11). Wave 4-W 는 `agent/cache.py::LLMCache.__init__` 에 keyword-only ``clock: Optional[Callable[[], float]] = None`` fakeable clock seam 을 도입한 마이크로 wave 다 (``TestLLMCacheClockSeam`` 17 케이스 신규). default ``None`` 분기로 운영 동작 무변경 — Redis ``setex`` / ``get`` / TTL / ``get()`` / ``set()`` public 시그니처·반환 셰이프 / 메트릭 / API / DB / 스키마 모두 미수정. `shared/schemas.py` 무변경. 머지/원격 push/PR/deploy/실 외부 호출 미수행.*

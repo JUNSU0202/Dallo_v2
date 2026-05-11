@@ -11,7 +11,7 @@ import hashlib
 import json
 import logging
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +31,14 @@ def _make_cache_key(file_content: str, rule_id: str, context: str) -> str:
 class LLMCache:
     """LLM 응답 캐시 (Redis 우선, 메모리 fallback)"""
 
-    def __init__(self, ttl: int = DEFAULT_TTL):
+    def __init__(
+        self,
+        ttl: int = DEFAULT_TTL,
+        *,
+        clock: Optional[Callable[[], float]] = None,
+    ):
         self._ttl = ttl
+        self._clock: Callable[[], float] = time.time if clock is None else clock
         self._redis = None
         self._memory_cache: dict = {}
 
@@ -69,7 +75,7 @@ class LLMCache:
                 logger.debug(f"[CACHE] Redis get 실패: {type(e).__name__}")
         else:
             entry = self._memory_cache.get(key)
-            if entry and time.time() < entry["expires"]:
+            if entry and self._clock() < entry["expires"]:
                 _metrics["hits"] += 1
                 return entry["data"]
             elif entry:
@@ -93,7 +99,7 @@ class LLMCache:
 
         self._memory_cache[key] = {
             "data": response,
-            "expires": time.time() + self._ttl,
+            "expires": self._clock() + self._ttl,
         }
         _metrics["saves"] += 1
 
