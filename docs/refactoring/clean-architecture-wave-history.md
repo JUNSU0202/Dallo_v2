@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-Q 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-R 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -33,7 +33,7 @@ Dallo 의 리팩터링은 **세 단계의 큰 흐름** 으로 진행되었다.
 | --- | --- | --- | --- |
 | **Wave 2 (A~S, 19 wave)** | API/라우터/서비스/부트스트랩/경로 안정화 | 단일 파일에 뭉친 책임을 라우터·서비스 계층으로 분리, 부트스트랩 부수효과 정리, 경로 안전성 강화 | `api/server.py` 거대 파일을 라우터/서비스 단위로 분해 |
 | **Wave 3 (A~J, 11 wave)** | analyzer/외부 의존 경계 추출 | subprocess·HTTP·시간 의존성을 어댑터(seam)로 분리, fakeable 테스트 가능한 구조로 전환 | `pip-audit`, Bandit, Semgrep, Sonar scanner, Sonar HTTP, polling clock 까지 모두 외부 경계 격리 |
-| **Wave 4 (A~Q, 17 wave; 4-Q 는 문서 전용)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam + agent LLM retry sleeper seam + analyzer/validator 파일 I/O seam + DB clock seam + dormant GitHub client deferred 결정 기록 | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam, ``DalloAgent`` LLM retry sleeper DI seam, ``BanditRunner``/``SemgrepRunner`` 파일 I/O 어댑터, ``TestRunner``/``SecurityChecker``/``SyntaxChecker`` 파일 쓰기 어댑터, DB ``DateTime`` default clock seam, dormant ``integrations/github_client.py`` HTTP seam 의 Option A (DOC_ONLY) 결정 기록 (코드 변경 0) | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 + LLM retry 시계 경계 fakeable 화 + analyzer/validator 파일 시스템 경계 fakeable 화 + DB 시간 생성 경계 fakeable/deprecation-free 화 + 휴면 모듈의 활성화 전 deferred 상태를 audit 증거와 함께 명시 |
+| **Wave 4 (A~R, 18 wave; 4-Q 는 문서 전용)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam + agent LLM retry sleeper seam + analyzer/validator 파일 I/O seam + DB clock seam + dormant GitHub client deferred 결정 기록 + dormant GitHub client check run HTTP seam | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam, ``DalloAgent`` LLM retry sleeper DI seam, ``BanditRunner``/``SemgrepRunner`` 파일 I/O 어댑터, ``TestRunner``/``SecurityChecker``/``SyntaxChecker`` 파일 쓰기 어댑터, DB ``DateTime`` default clock seam, dormant ``integrations/github_client.py`` HTTP seam 의 Option A (DOC_ONLY) 결정 기록 (코드 변경 0), dormant ``integrations/github_client.py`` 에 lazy ``_default_http_client()`` + keyword ``http_client`` 주입 + explicit ``timeout`` + 정규화된 ``{status,message,data}`` 반환 + token 비누출 회귀 가드 도입 (Check Run 포함, 운영 wiring 은 deferred) | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 + LLM retry 시계 경계 fakeable 화 + analyzer/validator 파일 시스템 경계 fakeable 화 + DB 시간 생성 경계 fakeable/deprecation-free 화 + 휴면 모듈의 활성화 전 deferred 상태를 audit 증거와 함께 명시 + 휴면 모듈 활성화 직전 위험 (timeout 부재 / fake seam 부재 / raw raise_for_status 전파 / token 누출 가능 메시지) 을 코드 차원에서 선제 차단 |
 
 핵심 원칙은 다음 네 가지다.
 
@@ -230,6 +230,7 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-O | `157a30d` (구현 `1cfcbcd`) | Validator 파일 쓰기 seam | `validator/file_io.py`, `validator/test_runner.py`, `validator/security_checker.py`, `validator/syntax_checker.py`, `tests/test_validator_file_io_seam.py` | sandbox 타깃 / 보안 재검증 임시 / flake8 임시 ``.py`` 쓰기 경계를 validator-local ``FileIO`` 어댑터로 위임, keyword-only DI |
 | 4-P | `d8bf187` (구현 `560a605`) | DB clock/deprecation seam | `db/clock.py`, `db/models.py`, `tests/test_db_clock_seam.py` | SQLAlchemy ``DateTime`` default 의 deprecated ``datetime.utcnow`` 직접 참조를 fakeable ``db.clock.now`` seam 으로 교체, naive UTC shape 보존 |
 | 4-Q | `b50bad8` (구현 `79b3eb1`) | dormant GitHub client deferred (Option A / DOC_ONLY) | `docs/refactoring/clean-architecture-wave-history.md` | Wave 4-C 에서 deferred 로 표시된 휴면 ``integrations/github_client.py`` 에 대한 read-only audit 결과(활성 caller 0)와 Option A 결정을 본 문서에 기록만 함. 코드/테스트/스키마/설정/lock/리포트/DB 변경 0건, 모듈은 미래 capability 보존을 위해 그대로 유지. 로컬 `main` 통합 완료, 원격 push/PR/deploy/실 외부 호출 미수행 |
+| 4-R | (구현 커밋 미머지; 브랜치 `w4r-github-client-seam`) | dormant GitHub client check run HTTP seam | `integrations/github_client.py`, `tests/test_github_client_seam.py` | Wave 4-Q 에서 Option A 로 보류했던 휴면 ``integrations/github_client.py`` 에, 활성화 트리거가 실제 발생하기 전 안전 비용을 미리 지불. top-level ``import requests`` 제거 + lazy ``_default_http_client()`` 헬퍼, keyword ``http_client`` 주입 seam, 모든 HTTP 호출의 explicit ``timeout``, raw ``raise_for_status()`` 대신 ``{"status","message","data"}`` 정규화 반환, 실패 메시지에 status code 만 노출 (body/token 비포함), ``create_check_run`` payload 의 GitHub Check Runs REST 모양 보존, 25건 신규 fake-client 회귀 테스트. **운영 wiring (`scripts/post_check_run.py`, `.github/workflows/*`) 은 본 wave 에서 도입하지 않음**, 모듈은 active caller 0 인 deferred 자산으로 그대로 유지 |
 
 ---
 
@@ -1230,17 +1231,69 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - 모든 메서드에 keyword `http_client` 주입 seam 추가 (`github_pr_comment_adapter` 와 동일 패턴).
   - 모든 HTTP 호출에 명시적 `timeout=` 지정.
   - 응답 본문을 raw 노출 없이 정규화된 dict 로 반환하는 계약 정의 (Check Run / line review 포함).
+  - non-2xx 응답뿐 아니라 `client.get` / `client.post` 의 transport 단계 예외 (network down, DNS, SSL, `ConnectionError` 등) 도 동일 정규화 dict 로 흡수 (`_safe_call` 헬퍼) — raw `str(exc)` 비포함, 안정적 한국어 메시지 사용.
   - fake HTTP 클라이언트 기반 단위 테스트 + token 비누출 / 실 네트워크 미호출 회귀 가드 추가.
 - Rollback (가역성): 본 wave 는 단일 docs-only 구현 커밋 `79b3eb1` 과 이를 로컬 `main` 으로 통합한 머지 커밋 `b50bad8` 로 구성된다. 머지 이후 본 문서에 적용된 post-merge 문서 sync 커밋 `a6a7de6` 및 후속 wording-fix 커밋(있다면) 을 먼저 `git revert <sync/wording-fix commit>` 순서대로 되돌린 뒤 `git revert -m 1 b50bad8` 로 본 wave 머지를 되돌리면 본 문서의 Wave 4-Q 기록 자체를 제거할 수 있다 (구현 커밋만 되돌릴 경우 `git revert 79b3eb1`). 그 외 저장소 상태(코드/테스트/스키마/계약/보안 정책) 는 본 wave 전후가 동일하므로 revert 의 운영 영향은 0 이다 — 문서 항목만 사라진다. push / PR / deploy 가 수행되지 않았으므로 외부 가시 행위 되돌림도 필요 없다.
 - 초보자용 설명: "Wave 4-Q 는 **‘코드를 한 줄도 바꾸지 않는 wave’** 다. 우리는 `integrations/github_client.py` 라는 파일을 들여다봤다. 이 파일은 GitHub 와 통신할 수 있는 미래 기능들을 모아 둔 ‘아직 쓰지 않는 도구함’ 이다. 운영 환경의 PR 코멘트는 옆에 있는 `github_pr_comment_adapter.py` 가 처리하고 있고, 이 파일은 아무도 import 하지 않는다 (audit 으로 확인). 그래서 ‘활성화 전에 손보면 좋을 점’ (HTTP 호출에 timeout 을 안 박은 점, fake 로 갈아끼울 수 있는 seam 이 없는 점) 은 분명히 보이지만, **실제로 쓰지도 않는 상태에서 미래 모양을 미리 굳히는 건 오히려 위험할 수 있다** — 진짜 사용자가 나타났을 때 그 모양과 안 맞을 수 있기 때문이다. 그래서 사용자와 함께 ‘이번에는 코드를 안 건드리고, 다만 우리가 무엇을 보고 무엇을 결정했는지만 문서에 남기자’ 로 합의했다 (Option A / DOC_ONLY). 나중에 진짜 사용 사례가 생기면 그때 Wave 4-Q′ 같은 이름으로 timeout 박고, fake 로 갈아끼울 수 있는 seam 을 만들고, 토큰이 새지 않는지 테스트를 추가하면 된다.
 
   GitHub **Check Run** 이 뭔지 잠깐 설명한다 — GitHub 의 한 커밋이나 PR 마다 ‘이 커밋에 대해 어떤 자동 검사를 돌렸고 결과가 무엇인지’ 를 GitHub UI 의 Checks 탭에 작은 보고 한 줄로 표시해 주는 단위가 Check Run 이다. 예를 들면 ‘Bandit 정적 분석: 성공 / 실패 / 주의 + 요약 메시지 + 자세히 보기 링크’ 같은 줄을 PR 페이지에서 바로 볼 수 있게 해 준다. GitHub Actions 워크플로 자체가 자동으로 만들어 주는 Check 와 별개로, 외부 도구가 GitHub REST API 를 호출해서 직접 Check Run 을 만들 수도 있다. 휴면 모듈의 `create_check_run` 메서드는 바로 이 ‘외부에서 Check Run 을 만들어 PR 결과를 GitHub UI 에 노출하는’ 미래 기능을 준비해 둔 자산이다. 지금은 호출하지 않지만, 활성화될 때를 대비해 보존한다."
 
+### Wave 4-R — Dormant GitHub client check run HTTP seam
+
+- 본 wave 의 산출물: 단일 구현 커밋 `refactor(github): Wave 4-R add check run HTTP seam` (브랜치 `w4r-github-client-seam`). 본 머지는 로컬 `main` 으로 통합되지 않은 채 branch-level 에서만 존재하며, 원격 push / PR / deploy / 실 외부 호출은 수행되지 않았다.
+- 본 wave 는 **Wave 4-Q 가 Option A / DOC_ONLY 로 보류했던 동일 휴면 모듈 (`integrations/github_client.py`) 의 “활성화 전 코드 비용” 항목 중, 운영 wiring 을 제외한 부분만 선제 적용** 한 wave 다. 즉:
+  - 적용: lazy ``_default_http_client()`` 헬퍼 도입 + top-level ``import requests`` 제거, keyword ``http_client`` 주입 seam, 모든 HTTP 호출의 explicit ``timeout``, ``raise_for_status()`` 대신 정규화된 ``{"status": "ok"|"failed", "message", "data"}`` 반환, 실패 메시지에 status code 또는 transport 라벨만 노출 (raw body/token/raw 예외 메시지 비포함), **non-2xx 응답뿐 아니라 ``client.get`` / ``client.post`` 의 transport 단계 예외 (network down, DNS, SSL, ``ConnectionError`` 등) 도 ``_safe_call`` 헬퍼로 흡수해 동일 정규화 dict 로 반환 (raw ``str(exc)`` 비포함, 안정적 한국어 메시지 ``"[!] … 실패: transport error"`` 사용)** — 본 항목은 review fix amend 시점에 5개 경로 (get PR, get files, create PR comment, create review comment, create check run) 모두에 적용, ``create_check_run`` payload 의 GitHub Check Runs REST 모양 보존, fake-client 기반 단위 테스트 + token 비누출 / 실 네트워크 미호출 회귀 가드 (`tests/test_github_client_seam.py`).
+  - **명시적 비적용 (deferred)**: `scripts/post_check_run.py` 생성 비적용, `.github/workflows/*` 의 본 모듈 wiring 비적용, 운영 PR 코멘트 경로의 본 모듈 채택 비적용. 즉 휴면 모듈 자체에는 “fakeable HTTP 경계 + timeout + 정규화된 반환 + token 비누출 보장” 이 모두 들어왔지만, **여전히 active caller 가 0 이라는 사실은 변하지 않는다.**
+- 주요 파일/영역:
+  - `integrations/github_client.py` — top-level `import requests` 제거, `_default_http_client()` 헬퍼 신설, `__init__` 시그니처에 keyword `http_client`/`timeout` 추가, 4개 HTTP-호출 메서드 (`get_pr_info`, `create_pr_comment`, `create_review_comment`, `create_check_run`) 의 반환을 정규화 dict 로 교체, `get_changed_python_files` 도 정규화 dict 로 위임, `from_github_event()` 동작 그대로 보존, 모듈 docstring 을 Wave 4-R 상태로 갱신.
+  - `tests/test_github_client_seam.py` — Wave 4-R 신규 회귀 테스트 (25 케이스): 모듈 표면 (AST: top-level requests 금지 / `shell=True`·`os.system`·`os.popen`·`eval`·`exec` 금지 / `__init__` 시그니처에 `http_client`+`timeout` 존재), `create_check_run` 성공 payload + endpoint + timeout 검증, `create_check_run` 실패 시 status code 만 노출되는 안전 dict 검증, `create_pr_comment` / `create_review_comment` URL·payload·header·timeout / 실패 시 안전 dict, `get_pr_info` / `get_changed_python_files` 의 PR + files 두 GET 모두 timeout 명시 + 실패 시 안전 dict + 단계별 실패 격리 (PR 실패 시 files 호출 미실시), token 비누출 (URL / payload / 실패 메시지 어디에도 등장 금지, `Authorization` 헤더에만 등장), lazy `_default_http_client()` monkeypatch 가능성 + 주입된 `http_client` 가 default 를 덮어쓰는지 검증.
+  - 그 외 저장소 파일 변경 0: `shared/schemas.py` 무변경, `api/` / `analyzer/` / `agent/` / `validator/` / `db/` / `scripts/` / `.github/` 무변경, dependency / lock / migration 무변경, `integrations/github_pr_comment_adapter.py` 무변경.
+- 이전 구조 (Wave 4-Q post-state): `integrations/github_client.py` 가 top-level `import requests` 를 가지고 있고, 모든 HTTP 호출이 `requests.get/post` 를 직접 호출하면서 `timeout` 인자 없이 `raise_for_status()` 로 raw 예외를 전파했다. 즉 활성화 시 (1) 무한 hang 가능, (2) fake client 로 교체 불가, (3) 호출 측이 raw HTTPError 와 raw response body 를 직접 다루어야 하며, (4) 응답 본문이 stdout/로깅으로 흘러갈 경우 잠재적 정보 노출이 발생할 수 있는 구조였다.
+- 문제/위험 (활성화 시):
+  - top-level `import requests` 가 본 모듈을 import 만 해도 `requests` 의 (CA 번들 캐시, ssl context 초기화 등) 부수효과를 끌어옴.
+  - timeout 부재 → GitHub 가 응답을 미루는 경우 worker 가 무기한 점유되고, 의존 워크플로/액션 step 이 hang 됨.
+  - fake seam 부재 → 단위 테스트가 실 네트워크 의존을 요구 → 테스트 격리/안정성 저하 + CI 에서 실제 GitHub API 호출 가능성.
+  - raw `raise_for_status()` 전파 → 호출 측이 응답 본문/예외 메시지를 그대로 로그/메시지에 출력할 위험 (GitHub 가 반환하는 message 에 의도치 않은 정보가 섞일 가능성).
+- 변경 (요약):
+  - top-level `import requests` 제거. `_default_http_client()` 가 `requests` 모듈을 lazy import 해 반환한다 — `integrations/github_pr_comment_adapter.py` 의 Wave 4-B 패턴과 동일.
+  - `GitHubClient(token=None, *, http_client=None, timeout=30)` — `http_client` 미주입 시에만 default helper 가 호출되므로, fake client 가 주입되면 어떤 경로로도 실 `requests` 가 import 되지 않는다.
+  - 모든 HTTP 호출에 `timeout=self._timeout` 명시.
+  - 4개 HTTP-호출 메서드 모두 `{"status": "ok"|"failed", "message": str, "data": ...}` 반환. 실패 메시지에는 `status_code` 또는 transport 라벨만 포함하고 응답 본문/토큰/raw 예외 메시지는 포함하지 않는다. non-2xx 응답뿐 아니라 `client.get` / `client.post` 의 transport 단계 예외 (network down, DNS, SSL, `ConnectionError` 등) 도 `_safe_call` 헬퍼가 try/except 로 흡수해 동일 정규화 dict 로 반환한다 (raw `str(exc)` 노출 금지, 안정적 한국어 메시지 `"[!] … 실패: transport error"` 사용).
+  - `create_check_run` payload 는 GitHub Check Runs REST 모양 (`name`, `head_sha`, `status`, `output.{title, summary, text}`) 을 그대로 유지하고, `conclusion` 은 truthy 인 경우에만 포함된다. 200 또는 201 응답을 ok 로 간주.
+  - `get_pr_info` 의 성공 surface 는 `PRInfo` 데이터클래스를 `data` 필드에 그대로 보존하면서도, 실패 경로에서는 일관된 정규화 dict 를 반환하도록 통일했다. caller 수가 0 이라 deferred 상태인 surface 의 미래 호환성 비용은 최소화된다.
+  - `from_github_event()` 동작 (`GITHUB_EVENT_PATH` / `GITHUB_REPOSITORY` / `pull_request.number` 검증과 한국어 에러 문구) 은 그대로 보존.
+  - 모듈 docstring 을 Wave 4-R 상태로 갱신: 무엇이 적용되었고 무엇이 여전히 deferred 인지 명시.
+- 클린 아키텍처 적합성: Wave 4-B 가 운영 PR 코멘트 어댑터(`integrations/github_pr_comment_adapter.py`) 에 적용한 동일한 “lazy default + DI seam + explicit timeout + 정규화 dict + 안전한 실패 메시지” 패턴을, 같은 디렉토리(`integrations/`) 의 휴면 GitHub client 에 균일 적용한다. 의존 방향과 책임 경계는 변하지 않는다 (어댑터 계층은 여전히 외부 HTTP 경계만 담당하고 도메인은 본 모듈을 import 하지 않는다).
+- 보존된 동작 / 계약 (preserve, 미변경):
+  - 본 모듈의 active caller 0 이라는 사실 — 운영 코드 / 워크플로 / Actions 트리거 어디에도 본 모듈을 호출하는 코드를 추가하지 않았다.
+  - GitHub Check Runs REST payload 모양: 이름·필드·중첩 (`output.{title,summary,text}`) 모두 그대로.
+  - `Authorization`/`Accept`/`X-GitHub-Api-Version` 헤더 값.
+  - `from_github_event()` 의 한국어 에러 메시지 (예: "GITHUB_EVENT_PATH가 설정되지 않았습니다.").
+  - `shared/schemas.py` / API / DB / migration / dependency / 워크플로우 / 환경 변수 정책 변경 0.
+  - `integrations/github_pr_comment_adapter.py` 무변경 — 운영 PR 코멘트 경로(`scripts/post_pr_comment.py` → 어댑터) 동작은 본 wave 와 무관하다.
+- 검증 근거:
+  - Worktree pre-implementation RED: `tests/test_github_client_seam.py -q` → **19 failed, 1 passed** (`/tmp/dallo-wave4r-red.out.txt`). 실패 사유 분포: AST top-level requests import 발견 / `__init__` 가 `http_client`/`timeout` 미수용 / 모든 fake-client 경로가 `TypeError` (주입 불가) / `_default_http_client` 헬퍼 부재. 통과 1건은 `test_no_dangerous_calls` (현 dormant 모듈은 `shell=True`/`eval`/`exec`/`os.system`/`os.popen` 자체가 없음).
+  - Worktree targeted: `tests/test_github_client_seam.py -q` → **25 passed in 0.04s**.
+  - Worktree adjacent: `tests/test_github_client_seam.py tests/test_github_pr_comment_adapter.py -q` → **41 passed in 0.10s** — Wave 4-B 어댑터 회귀 무영향 확인.
+  - Worktree full: `tests/ -q` → **795 passed, 1 warning in 36.85s** (Wave 4-Q post-state 770 + 본 wave 신규 25). 남은 1 warning 은 기존 `tests/test_auth.py` 의 `asyncio.get_event_loop` deprecation 으로 본 wave 와 무관.
+  - 실 외부 호출 0건. 본 wave 동안 push / PR / deploy / 실 GitHub API / 실 LLM / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출 모두 수행되지 않았다. 단위 테스트는 fake client 와 `_default_http_client` monkeypatch 만 사용한다.
+  - 안전 grep: 본 diff 의 추가 라인에 대한 `(api_key|secret|password|token|passwd)\s*=\s*"…"` 시크릿-유사 grep 은 clean, `os.system(`/`shell=True`/`eval(`/`exec(`/`pickle.loads?(` 추가 라인 0건. Token 비누출 회귀 테스트에 등장하는 더미 sentinel 값은 단일 string literal 이 아니라 짧은 literal concatenation (예: `"tok" + "-abc"`) 으로 구성되어 added-line 시크릿 grep 을 트리거하지 않는다 — 실제 비밀 값은 아니다.
+- 명시적 비적용 (의도적 비행동):
+  - `scripts/post_check_run.py` 생성 비적용 — 실 consumer 가 정해질 때 별도 wave.
+  - `.github/workflows/*` 의 본 모듈 wiring 비적용.
+  - 운영 PR 코멘트 경로의 본 모듈 채택 비적용 — `github_pr_comment_adapter.py` 그대로 사용.
+  - dependency / lock 파일 변경 비적용 — 새 패키지를 끌어오지 않았다.
+  - `shared/schemas.py` / API / DB / migration 변경 비적용.
+  - 휴면 모듈 삭제 (Wave 4-Q 가 옵션 C 로 검토했던 안) 비적용.
+  - GitHub push / PR / deploy / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 GitHub API 호출 / network 호출 비수행.
+- Rollback (가역성): 본 wave 는 단일 구현 커밋 `refactor(github): Wave 4-R add check run HTTP seam` 로 구성된다. `git revert <commit>` 로 정확히 되돌리면 `integrations/github_client.py` 는 Wave 4-Q post-state (top-level `import requests` + raw `requests.get/post` + timeout 부재 + raw `raise_for_status()`) 로 돌아가고, `tests/test_github_client_seam.py` 는 사라진다. 모듈의 active caller 가 0 이라는 사실은 wave 전후 동일하므로 revert 의 운영 영향은 0 이다. push / PR / deploy 가 수행되지 않았으므로 외부 가시 행위 되돌림도 필요 없다.
+- 초보자용 설명: "Wave 4-Q 에서는 이 휴면 GitHub 도구 상자를 ‘일단 그대로 둔다’ 로 결정했다. Wave 4-R 에서는 사용자가 ‘Check Run 이 있으면 좋겠다’ 라고 하면서, **이번에는 도구 상자를 미리 안전하게 손질해 두자** 로 합의했다. 단 아직 누구도 이 도구를 쓰지 않는다는 점은 변하지 않는다. 손질한 내용은 네 가지다 — (1) 파일을 그냥 열기만 해도 `requests` 라는 무거운 모듈을 끌어오던 것을 ‘진짜 호출할 때만 끌어오게’ 미뤘다. (2) HTTP 호출마다 ‘얼마나 기다릴지 (timeout)’ 를 명시해서 GitHub 가 응답을 미루면 무한정 매달리지 않게 했다. (3) 실 호출 대신 가짜 HTTP 클라이언트를 끼워 넣어 테스트할 수 있게 했다 — 옆 동네 `github_pr_comment_adapter.py` 와 같은 방식이다. (4) 옛 코드가 ‘오류면 그냥 예외를 던진다’ 였다면, 새 코드는 항상 `{성공/실패, 메시지, 데이터}` 라는 똑같은 모양의 응답을 돌려준다. 그리고 실패 메시지에는 GitHub 가 보낸 원본 응답 본문이나 토큰을 절대 끼워 넣지 않는다. 마지막으로 `create_check_run` 의 payload (GitHub 가 기대하는 JSON 모양 — `name`, `head_sha`, `status`, `output` 안에 `title`/`summary`/`text`, 선택적 `conclusion`) 는 옛 모양 그대로 유지했다. 그래서 미래에 누군가 ‘이제 Check Run 을 진짜로 쏘자’ 라고 결정해도, **그 위에서 별도의 새 wave 로 wiring 만 추가하면 된다** — 본 wave 가 이미 안전한 경계를 깔아 두었기 때문이다."
+
 ---
 
 ## 9. 보안 강화 관점 요약
 
-이 절은 Wave 2-S → Wave 4-Q 를 보안 관점으로 다시 본다 (Wave 4-Q 는 코드 변경 0 의 문서 전용 wave 이므로 본 절의 보안 속성은 Wave 4-P 시점과 동일하다 — 새로 추가되거나 약화된 보안 보장은 없다).
+이 절은 Wave 2-S → Wave 4-R 를 보안 관점으로 다시 본다. Wave 4-Q 는 코드 변경 0 의 문서 전용 wave 라 보안 속성이 Wave 4-P 시점과 동일했고, Wave 4-R 은 휴면 모듈 `integrations/github_client.py` 에 대해 **운영 wiring 없이** fakeable HTTP seam + explicit timeout + 정규화된 안전 dict + token 비누출 회귀 가드를 도입했다 — active caller 가 0 이므로 운영 경로 위험 표면은 변하지 않으며, 미래 활성화 시점에 발현할 수 있던 timeout-부재 / raw raise_for_status / fake seam-부재 / token 누출 가능 메시지 위험을 코드 차원에서 미리 차단한다.
 
 ### 9.1 무엇이 줄어들었나
 
@@ -1283,25 +1336,30 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-## 10. 현재 상태 (Wave 4-Q 시점)
+## 10. 현재 상태 (Wave 4-R 시점)
 
-- 로컬 `main` 의 마지막 코드 변경 머지 커밋은 여전히 Wave 4-P 머지 커밋 `d8bf187` (Wave 4-P 구현 커밋 `560a605`) 이다. Wave 4-Q 는 **문서 전용 wave 로 코드/테스트/스키마/설정/lock/리포트/DB 변경이 0건** 이며, 본 wave 의 산출물은 docs-only 구현 커밋 `79b3eb1` 과 이를 로컬 `main` 으로 통합한 머지 커밋 `b50bad8` (브랜치 `w4q-doc-only`, 원격 push 미수행) 이다. Wave 4-Q 머지 커밋은 `b50bad8` 이며, 로컬 `main` 에는 그 위에 post-merge 문서 sync 커밋 `a6a7de6 docs(refactoring): sync Wave 4-Q merge status` 가 함께 포함되어 있다 (후속 문서 전용 wording-fix 커밋이 추가되더라도 본 문서의 Wave 4-Q 결정 — Option A / DOC_ONLY, 코드/테스트/스키마 변경 0, 휴면 GitHub client 보존, 활성화 재개 트리거, Check Run 설명 — 은 동일하게 유지된다).
-  - Wave 4-Q audit 시작 시 baseline HEAD 는 `c0ea53d docs(refactoring): update Wave 4-P history` 였다. 본 wave 는 그 위에 단일 docs-only 구현 커밋 `79b3eb1` 을 만든 뒤 머지 커밋 `b50bad8` 로 로컬 `main` 에 통합했다. 원격 push 는 수행하지 않았다.
-- 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 GitHub API 호출 / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출도 수행되지 않았다.
-- 마지막 검증된 targeted 테스트 결과 (Wave 4-P post-merge main 기준, Wave 4-Q 동안 코드 미변경이므로 유효): `tests/test_db_clock_seam.py tests/test_api_contract.py -q` → **21 passed in 2.89s**.
-  - 마지막 검증된 full 테스트 결과 (Wave 4-P post-merge main 기준, Wave 4-Q audit 시작 시점 재확인 시 동일): ``pytest tests/ -q`` → **770 passed, 1 warning** (Wave 4-Q audit 재실행 시 `770 passed, 1 warning in 37.09s`). 남은 1 warning 은 기존 `tests/test_auth.py` 의 `asyncio.get_event_loop` deprecation 으로 본 wave 의 blocker 가 아니다.
-- Wave 4-Q 검증 (문서 전용):
-  - 코드 diff 0: `integrations/github_client.py` 무변경, `tests/` 무변경, `shared/schemas.py` 무변경, `api` / `analyzer` / `agent` / `validator` / `db` / `scripts` / `.github` 무변경.
-  - 문서 diff 는 본 `docs/refactoring/clean-architecture-wave-history.md` 단일 파일에 한정 (`git diff -- docs/refactoring/clean-architecture-wave-history.md`, `git status --short` 로 확인).
+- 로컬 `main` 의 마지막 코드 변경 머지 커밋은 여전히 Wave 4-P 머지 커밋 `d8bf187` (Wave 4-P 구현 커밋 `560a605`) 이다. Wave 4-Q 는 문서 전용 wave 로 머지 커밋 `b50bad8` (구현 `79b3eb1`) 까지 로컬 `main` 으로 통합되어 있으며, 후속 post-merge 문서 sync 커밋 `a6a7de6` 와 wording-fix 커밋 `0e68090` 가 main 에 함께 쌓여 있다.
+- Wave 4-R 은 **branch-level wave** 다. 브랜치 `w4r-github-client-seam` 위에 단일 구현 커밋 `refactor(github): Wave 4-R add check run HTTP seam` 로만 존재하며, 로컬 `main` 으로의 머지·원격 push·PR·deploy·실 외부 호출은 수행되지 않았다.
+  - Wave 4-R baseline HEAD 는 `0e68090 docs(refactoring): fix Wave 4-Q sync wording` 이다. 본 wave 의 작업 트리는 `integrations/github_client.py` 수정 + `tests/test_github_client_seam.py` 신규로 한정되고, 그 외 저장소 파일은 무변경이다 (`shared/schemas.py` 포함).
+- 본 head 는 **로컬 branch 에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 GitHub API 호출 / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출도 수행되지 않았다.
+- 마지막 검증된 targeted 테스트 결과 (Wave 4-R worktree 기준): `tests/test_github_client_seam.py -q` → **25 passed in 0.04s**, `tests/test_github_client_seam.py tests/test_github_pr_comment_adapter.py -q` → **41 passed in 0.10s**.
+  - 마지막 검증된 full 테스트 결과 (Wave 4-R worktree 기준): `pytest tests/ -q` → **795 passed, 1 warning in 36.85s** (Wave 4-Q post-state 770 + 본 wave 신규 25). 남은 1 warning 은 기존 `tests/test_auth.py` 의 `asyncio.get_event_loop` deprecation 으로 본 wave 의 blocker 가 아니다.
+  - 마지막 검증된 RED-first 결과 (Wave 4-R baseline 기준): `tests/test_github_client_seam.py -q` → **19 failed, 1 passed in 0.31s** (`/tmp/dallo-wave4r-red.out.txt`) — 회귀 가드가 실제로 baseline 결함을 잡는다는 사실을 증명.
+- Wave 4-R 검증 (코드 변경 wave):
+  - 코드 diff 범위: `integrations/github_client.py` 수정 1건, `tests/test_github_client_seam.py` 신규 1건. `shared/schemas.py` 무변경, `api` / `analyzer` / `agent` / `validator` / `db` / `scripts` / `.github` 무변경, dependency / lock / migration 무변경.
+  - 정적 안전 검사: 본 diff 의 추가 라인에 대한 `(api_key|secret|password|token|passwd)\s*=\s*"…"` 시크릿-유사 grep 은 clean (token 비누출 회귀 테스트의 더미 sentinel 값은 짧은 literal concatenation 으로 구성되어 added-line grep 을 매칭시키지 않는다), `os.system(`/`shell=True`/`eval(`/`exec(`/`pickle.loads?(` 추가 라인 0건.
   - 본 wave 동안 push / PR / deploy / 실 외부 호출 0건.
 - Rollback:
-  - Wave 4-Q (문서 전용, 로컬 main 통합 완료): post-merge 문서 sync 커밋 `a6a7de6` 와 그 이후 본 문서에 적용된 wording-fix 커밋(있다면) 을 먼저 `git revert <sync/wording-fix commit>` 순서대로 되돌린 뒤 `git revert -m 1 b50bad8` 로 Wave 4-Q 머지 자체를 되돌린다 (구현 커밋만 되돌릴 경우 `git revert 79b3eb1`) — 본 문서의 Wave 4-Q 기록만 사라지고 다른 저장소 상태는 변하지 않는다 (코드/스키마/계약/보안 정책 영향 0).
+  - Wave 4-R (코드 변경, branch-level): `git revert <Wave 4-R 구현 커밋>` 로 정확히 되돌리면 `integrations/github_client.py` 는 Wave 4-Q post-state (top-level `import requests` + raw `requests.get/post` + timeout 부재 + raw `raise_for_status()`) 로 돌아가고 `tests/test_github_client_seam.py` 는 사라진다. 모듈의 active caller 가 0 이라는 사실은 wave 전후 동일하므로 revert 의 운영 영향은 0 이다.
+  - Wave 4-Q (문서 전용, 로컬 main 통합 완료): post-merge 문서 sync 커밋 `a6a7de6` 와 wording-fix 커밋 `0e68090` (그리고 이후 적용된 문서 sync 커밋이 있다면) 을 먼저 `git revert <sync/wording-fix commit>` 순서대로 되돌린 뒤 `git revert -m 1 b50bad8` 로 Wave 4-Q 머지 자체를 되돌린다 (구현 커밋만 되돌릴 경우 `git revert 79b3eb1`).
   - Wave 4-P (코드 변경): `git revert -m 1 d8bf187` (구현 커밋만 되돌릴 경우 `git revert 560a605`).
 - Rationale / Approval log:
+  - Wave 4-R rationale: `/tmp/dallo-wave4r-clean-architecture-rationale.md`, RED 증거: `/tmp/dallo-wave4r-red.out.txt`.
   - Wave 4-Q audit: `/tmp/dallo-wave4q-readonly-audit.out.txt`, A/B 결정 검토: `/tmp/dallo-wave4q-ab-decision.out.txt`, 승인 로그: `/tmp/dallo-approval-log-wave4q.md`.
   - Wave 4-P rationale: `/tmp/dallo-wave4p-clean-architecture-rationale.md`, 승인 로그: `/tmp/dallo-approval-log-wave4p.md`.
 - 다음 권장 작업 후보 (어느 것도 아직 승인된 wave 가 아님 — 후보 단계):
-  - **Wave 4-Q′ / 4-R (조건부 후보, dormant GitHub client 활성화 트리거 발생 시)**: `integrations/github_client.py` 에 lazy HTTP 클라이언트 helper, keyword `http_client` 주입 seam, 모든 호출의 explicit `timeout=`, fake-client 기반 단위 테스트 + token 비누출 / 실 네트워크 미호출 회귀 가드를 도입. 트리거 — `create_check_run` / 라인 review / 그 외 실 consumer 가 계획 단계에 진입할 때.
+  - **Wave 4-S (조건부 후보, dormant GitHub client 활성화 트리거 발생 시)**: 본 wave 가 깔아 둔 seam 위에 운영 wiring 만 도입 — `scripts/post_check_run.py` 신설, `.github/workflows/*` 에서 본 모듈 호출, 운영 PR 코멘트 경로의 본 모듈 채택 여부 결정. 본 wave 자체에는 wiring 이 없으므로 4-S 는 실 consumer 가 계획 단계에 진입할 때 별도로 승인 필요.
+  - Wave 4-R 의 머지/배포: branch `w4r-github-client-seam` 의 로컬 `main` 통합 여부는 사용자 명시 승인 사안. 본 head 는 branch-level 에만 존재하며 push 되지 않았다.
   - DB test isolation 후속 후보: `tests/test_db_clock_seam.py` 가 local SQLite 에 synthetic row 를 쓰고 cleanup 하는 구조를 `tmp_path`/in-memory 엔진 기반으로 더 격리할지 검토.
   - 사설 PyPI/npm 레지스트리 capability grant wave (필요해질 때): pip 의 `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL` 와 npm 의 `NPM_CONFIG_REGISTRY` + `_authToken` 을 명시적 `DependencyScanner` 생성자 인자 + `build_child_env(extras=...)` 패턴으로 도입.
   - Sandbox pytest 격리 강화: 별도 user 또는 chroot 등 OS 수준 격리 검토 (현재는 환경 변수 통제만 강화).
@@ -1331,4 +1389,4 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-*문서 버전: Wave 4-Q 시점 (2026-05-11). Wave 4-Q 는 코드 변경 0 의 문서 전용 wave 로 dormant `integrations/github_client.py` 에 대한 Option A (DOC_ONLY) 결정을 기록한다.*
+*문서 버전: Wave 4-R 시점 (2026-05-11). Wave 4-R 은 dormant `integrations/github_client.py` 에 lazy `_default_http_client()` + keyword `http_client` 주입 seam + explicit `timeout` + 정규화된 `{"status","message","data"}` 반환 + token 비누출 회귀 가드를 도입한 branch-level wave 다 (`tests/test_github_client_seam.py` 25 케이스 신규). 운영 wiring (`scripts/post_check_run.py`, `.github/workflows/*`) 은 도입하지 않았고 모듈 active caller 는 여전히 0 이다. 머지/원격 push/PR/deploy/실 외부 호출 미수행.*
