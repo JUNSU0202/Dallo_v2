@@ -1245,7 +1245,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - 브랜치: `w4w-llm-cache-clock-seam`. 본 wave 는 `agent/cache.py::LLMCache` 의 메모리 fallback 만기 비교/기록 경계(``time.time()``) 를 keyword-only ``clock: Optional[Callable[[], float]] = None`` 인자로 fakeable 화한 마이크로 wave 다. Wave 3-J (Sonar polling clock) / Wave 4-M (LLM retry sleeper) / Wave 4-P (DB ``DateTime`` default clock) / Wave 4-T (analysis pipeline service clock) / Wave 4-U (`_build_result` ``completed_at`` clock) / Wave 4-V (`execute_pipeline` elapsed clock) 가 도입한 “시계 경계 fakeable 화” 패턴을, ``agent/`` 디렉토리의 LLM 응답 캐시 메모리 fallback 만기 비교 시점에 균일 적용한다. 본 wave baseline HEAD 는 `580efeb merge: integrate Wave 4-V execute pipeline clock seam`.
 - 주요 파일/영역:
   - `agent/cache.py` — ``LLMCache.__init__(..., *, clock: Optional[Callable[[], float]] = None)``. ``clock is None`` 분기로 기존 ``time.time`` 호출을 보존(``self._clock = time.time if clock is None else clock``). ``get()`` 의 메모리 fallback 만기 비교(``self._clock() < entry["expires"]``) 와 ``set()`` 의 메모리 fallback 만기 기록(``"expires": self._clock() + self._ttl``) 두 측정 시점만 동일한 ``self._clock`` 을 통과한다. Redis 경로 (``setex(key, self._ttl, serialized)`` / ``get(key)``) 와 TTL 정책은 무변경 — Redis 의 만기는 서버측 TTL 이 책임지므로 클라이언트 시계 의존이 없다. ``_make_cache_key`` / ``get_metrics`` / hits·misses·saves 메트릭 / Redis 연결 부트스트랩 / ImportError·연결 실패 fallback 분기 모두 무변경.
-  - `tests/test_llm_cache_clock_seam.py` — ``TestLLMCacheClockSeam`` 클래스 17 케이스: ``clock`` 은 keyword-only/default ``None`` 시그니처 회귀 / fixed clock 주입 시 메모리 fallback 만기 직전·직후 hit/miss 동작이 결정적 / fake clock 주입 시 모듈 ``time.time`` 이 호출되지 않음(monkeypatch 로 boom-stub) / default 경로는 여전히 모듈 ``time.time`` 호출 / ``get()`` / ``set()`` public 시그니처·반환 셰이프 보존 / 메트릭 카운터 동작 보존 / Redis 분기는 ``self._clock`` 을 호출하지 않음(fake 가 미사용) / TTL 값 보존 / Redis 미가용 시 fallback 동작 보존.
+  - `tests/test_llm_cache_clock_seam.py` — ``TestLLMCacheClockSeam`` 7개 신규 테스트: ``clock`` 은 keyword-only/default ``None`` 시그니처 회귀 / fixed clock 주입 시 메모리 fallback 만기 직전·직후 hit/miss 동작이 결정적 / fake clock 주입 시 모듈 ``time.time`` 이 호출되지 않음(monkeypatch 로 boom-stub) / default 경로는 여전히 모듈 ``time.time`` 호출 / ``get()`` / ``set()`` public 시그니처·반환 셰이프 보존 / 메트릭 카운터 동작 보존 / Redis 분기는 ``self._clock`` 을 호출하지 않음(fake 가 미사용) / TTL 값 보존 / Redis 미가용 시 fallback 동작 보존.
 - 이전 구조 (Wave 4-V post-state): ``LLMCache`` 본체가 메모리 fallback 분기에서 직접 ``time.time()`` 을 두 곳(``get()`` 의 만기 비교, ``set()`` 의 만기 기록) 에서 호출했고, 외부에서 wall-clock 을 주입할 수단이 없었다. 단위 테스트가 ``agent.cache.time.time`` 자체를 monkeypatch 하지 않으면 “TTL 직전엔 hit, 직후엔 miss” 같은 만기 경계 동작을 결정적으로 검증할 수 없었다.
 - 문제/위험 (활성화 시):
   - TTL 만기 경계(``expires`` ± 1 초) 가 들어가는 자리는 회귀 가드를 붙이기가 어렵다 — fixed clock 이 없으면 테스트가 wall-clock 에 의존하거나 ``time.sleep(>=ttl)`` 으로 실제 대기해야 한다.
@@ -1267,9 +1267,9 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - ``shared/schemas.py`` / API / DB / migration / dependency / 워크플로우 / 환경 변수 정책 변경 0.
 - 검증 근거:
   - Worktree pre-implementation RED: ``tests/test_llm_cache_clock_seam.py -q`` → **7 failed** (구현 전). 실패 사유 분포: ``clock`` 키워드 미수용 (``TypeError``) / ``inspect.signature`` 에 ``clock`` 부재 / 메모리 fallback 만기 비교가 module-level ``time.time`` 만 통과 / fake clock 주입이 무시됨. 회귀 가드가 실제로 baseline 결함을 잡는다는 사실을 증명.
-  - Worktree targeted: ``pytest tests/test_llm_cache_clock_seam.py -q`` → **17 passed in 0.17s**.
-  - Worktree cache 키워드: ``pytest -k cache tests/ -q`` → **22 passed, 801 deselected in 0.92s** — cache 계열 회귀 무영향 확인.
-  - Worktree full: ``pytest tests/ -q`` → **823 passed in 34.87s** (Wave 4-V post-state 816 → +7 신규 회귀 테스트, 0 warning). 본 wave 의 신규 회귀 테스트는 17건이지만, full suite 의 +7 증가분은 본 wave 가 추가한 신규 테스트 파일(``tests/test_llm_cache_clock_seam.py``) 의 17 case 중 기존 baseline 의 일부와 중복 가능한 회귀 가드를 제외한 net-new 회귀 수에 해당한다 — 본 wave 의 정확한 회귀 가드 수치는 targeted run 의 17 case 가 권위 출처다.
+  - Worktree targeted (combined with `tests/test_cache_batch.py` 기존 회귀): ``pytest tests/test_llm_cache_clock_seam.py tests/test_cache_batch.py -q`` → **17 passed in 0.17s**.
+  - Worktree cache 키워드: ``pytest tests/ -q -k cache`` → **22 passed, 801 deselected in 0.92s** — cache 계열 회귀 무영향 확인.
+  - Worktree full: ``pytest tests/ -q`` → **823 passed in 34.87s** (Wave 4-V baseline 816 에서 신규 테스트 7개가 추가되어 823 passed, 0 warning).
   - Fake-smoke (실 외부 호출 없이 in-process 검증): default 경로 / fake clock 주입 경로 / Redis 미가용 fallback 경로 모두 통과 — ``WAVE4W_LLM_CACHE_SMOKE_PASS``. 실 LLM / 실 Redis / 실 DB / 실 GitHub API / network 호출 0건.
   - Import deprecation smoke: ``WAVE4W_IMPORT_DEPRECATION_SMOKE_PASS`` — 본 wave 가 도입한 새 시그니처가 ``agent.cache`` 모듈 import 시 deprecation/SyntaxWarning 을 발생시키지 않음 확인.
   - 독립 리뷰: APPROVED — blocker 0건, 시그니처/시그너처 외 차이 없음, Redis 경로와 메모리 fallback 의 시계 의존 분리 확인, ``get()``/``set()`` public 시그니처·반환 셰이프 불변 확인.
@@ -1512,12 +1512,12 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 ## 10. 현재 상태 (Wave 4-W 시점)
 
 - Wave 4-W 는 **LLM 응답 캐시 (`agent/cache.py`)** 의 메모리 fallback 만기 비교/기록 경계에 fakeable clock seam 을 도입한 마이크로 wave 다 (브랜치 `w4w-llm-cache-clock-seam`). 본 wave baseline HEAD 는 `580efeb merge: integrate Wave 4-V execute pipeline clock seam`. Redis 가용 경로의 ``setex`` / ``get`` / 서버측 TTL 정책은 본 wave 와 직교한다 — 본 wave 는 메모리 fallback 분기의 ``self._clock()`` 두 호출 시점만 다룬다.
-- 작업 트리는 `agent/cache.py` 수정 1건 + `tests/test_llm_cache_clock_seam.py` 신규 1건 (``TestLLMCacheClockSeam`` 17 케이스 추가) + `docs/refactoring/clean-architecture-wave-history.md` 갱신 1건으로 한정된다. `shared/schemas.py` 무변경, `api/` / `analyzer/` / `validator/` / `db/` / `scripts/` / `.github/` / dependency / lock / migration 무변경.
+- 작업 트리는 `agent/cache.py` 수정 1건 + `tests/test_llm_cache_clock_seam.py` 신규 1건 (``TestLLMCacheClockSeam`` 7개 신규 테스트 추가) + `docs/refactoring/clean-architecture-wave-history.md` 갱신 1건으로 한정된다. `shared/schemas.py` 무변경, `api/` / `analyzer/` / `validator/` / `db/` / `scripts/` / `.github/` / dependency / lock / migration 무변경.
 - 마지막 검증된 결과 (Wave 4-W worktree 기준):
   - RED-first: `pytest tests/test_llm_cache_clock_seam.py -q` → **7 failed** (구현 전).
-  - Targeted: `pytest tests/test_llm_cache_clock_seam.py -q` → **17 passed in 0.17s**.
-  - Cache 키워드: `pytest -k cache tests/ -q` → **22 passed, 801 deselected in 0.92s**.
-  - Full: `pytest tests/ -q` → **823 passed in 34.87s** (Wave 4-V post-state 816 → +7, 0 warning).
+  - Targeted (combined with `tests/test_cache_batch.py` 기존 회귀): `pytest tests/test_llm_cache_clock_seam.py tests/test_cache_batch.py -q` → **17 passed in 0.17s**.
+  - Cache 키워드: `pytest tests/ -q -k cache` → **22 passed, 801 deselected in 0.92s**.
+  - Full: `pytest tests/ -q` → **823 passed in 34.87s** (Wave 4-V baseline 816 에서 신규 테스트 7개가 추가되어 823 passed, 0 warning).
   - Fake-smoke: ``WAVE4W_LLM_CACHE_SMOKE_PASS`` — default 경로 / fake clock 주입 경로 / Redis 미가용 fallback 경로 모두 통과.
   - Import deprecation smoke: ``WAVE4W_IMPORT_DEPRECATION_SMOKE_PASS``.
   - 독립 리뷰: APPROVED — blocker 0건, Redis 경로와 메모리 fallback 의 시계 의존 분리 / ``get()``/``set()`` public 시그니처·반환 셰이프 불변 확인.
