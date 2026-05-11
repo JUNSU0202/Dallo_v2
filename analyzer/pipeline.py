@@ -40,6 +40,8 @@ def execute_pipeline(
     model: str = "gemini-2.0-flash-lite",
     multi_patch: bool = False,
     on_progress: Optional[Callable[[str], None]] = None,
+    *,
+    clock: Optional[Callable[[], float]] = None,
 ) -> PipelineResult:
     """
     분석 파이프라인을 실행합니다.
@@ -53,6 +55,9 @@ def execute_pipeline(
         model: LLM 모델명
         multi_patch: 다중 수정안 생성 여부
         on_progress: 진행 상황 콜백 (단계 메시지 문자열 전달)
+        clock: elapsed 측정용 fakeable 시계 (Wave 4-V seam).
+            ``None`` 이면 모듈 ``time.time`` 을 사용 — 운영 동작 무변경.
+            주입 시 start/end 모두 주입된 callable 로만 계산된다.
 
     Returns:
         PipelineResult
@@ -68,7 +73,8 @@ def execute_pipeline(
     if len(code) > MAX_CODE_SIZE:
         raise ValueError("코드가 너무 큽니다 (최대 1MB)")
 
-    start_time = time.time()
+    time_provider = time.time if clock is None else clock
+    start_time = time_provider()
     pipeline_result = PipelineResult()
     tmp_dir = tempfile.mkdtemp(prefix="dallo_analyze_")
 
@@ -116,7 +122,7 @@ def execute_pipeline(
 
         # 결과 조립
         _progress("결과 저장 중...")
-        elapsed = time.time() - start_time
+        elapsed = time_provider() - start_time
         result_data = _build_result(job_id, vuln_reports, patches, elapsed)
 
         # DB 저장
