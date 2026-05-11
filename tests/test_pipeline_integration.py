@@ -236,3 +236,207 @@ class TestBuildResultClockSeam:
         assert result["completed_at"] == fixed.isoformat()
         # round-trip: 문자열 → datetime 으로 정확히 복원되어야 한다
         assert datetime.fromisoformat(result["completed_at"]) == fixed
+
+
+# ============================================================
+# Wave 4-V: execute_pipeline elapsed clock seam
+# ============================================================
+
+class TestExecutePipelineClockSeam:
+    """``analyzer.pipeline.execute_pipeline`` 의 elapsed ``time.time()`` 경계를
+    keyword-only ``clock`` 인자로 fakeable 화한 회귀 가드.
+
+    Wave 4-U (_build_result completed_at clock seam) 와 동일한 패턴:
+    ``clock is None`` 일 때만 모듈 ``time.time`` 을 사용 → 운영 동작 무변경,
+    테스트는 ``clock=fake`` 로 ``duration_seconds`` 를 결정적으로 검증.
+    """
+
+    @pytest.fixture
+    def stub_pipeline_io(self, monkeypatch):
+        """``execute_pipeline`` 의 외부 의존 단계 (정적 분석/DB 저장) 를 무력화.
+
+        elapsed 만 결정적으로 검증하기 위해 정적 분석은 빈 결과를 돌려주고,
+        DB 저장은 no-op 으로 만든다. LLM 은 ``use_llm=False`` 로 호출부에서
+        스킵한다. 실 semgrep/bandit/LLM/DB/network 호출은 발생하지 않는다.
+        """
+        import analyzer.pipeline as pipeline_mod
+        monkeypatch.setattr(
+            pipeline_mod, "_run_static_analysis", lambda *a, **kw: [],
+        )
+        monkeypatch.setattr(
+            pipeline_mod, "_persist_to_db", lambda *a, **kw: None,
+        )
+
+    def test_clock_param_is_keyword_only_with_default_none(self):
+        """``clock`` 은 keyword-only 이고 default 는 ``None`` 이다."""
+        import inspect as _inspect
+        from analyzer.pipeline import execute_pipeline
+
+        sig = _inspect.signature(execute_pipeline)
+        assert "clock" in sig.parameters, (
+            "execute_pipeline 에 clock 인자가 없다"
+        )
+        param = sig.parameters["clock"]
+        assert param.kind is _inspect.Parameter.KEYWORD_ONLY, (
+            f"clock 은 keyword-only 이어야 한다 (got {param.kind})"
+        )
+        assert param.default is None, (
+            f"clock default 는 None 이어야 한다 (got {param.default!r})"
+        )
+
+    def test_fake_clock_makes_duration_seconds_deterministic(
+        self, stub_pipeline_io,
+    ):
+        """주입된 ``clock`` 의 (start, end) tick 차이가 ``duration_seconds`` 에
+        round(2) 로 반영된다 — wall-clock 의존 제거."""
+        from analyzer.pipeline import execute_pipeline
+
+        ticks = iter([100.0, 101.23])
+
+        result = execute_pipeline(
+            job_id="job_clk",
+            code="x = 1\n",
+            filename="x.py",
+            use_llm=False,
+            clock=lambda: next(ticks),
+        )
+
+        assert result.result_data["duration_seconds"] == 1.23, (
+            f"fake clock 이 duration_seconds 에 반영되지 않음: "
+            f"{result.result_data['duration_seconds']}"
+        )
+
+    def test_fake_clock_does_not_call_module_time_time(
+        self, stub_pipeline_io, monkeypatch,
+    ):
+        """``clock`` 이 주입되면 모듈 ``time.time`` 은 한 번도 호출되지 않는다.
+
+        ``analyzer.pipeline.time`` 을 spy 로 교체해 ``clock`` 주입 경로가
+        모듈 ``time`` 을 우회함을 직접 검증한다.
+        """
+        import analyzer.pipeline as pipeline_mod
+
+        class _SpyTime:
+            def __init__(self):
+                self.calls = 0
+
+            def time(self):
+                self.calls += 1
+                return 999.0
+
+        spy = _SpyTime()
+        monkeypatch.setattr(pipeline_mod, "time", spy)
+
+        ticks = iter([200.0, 200.5])
+        pipeline_mod.execute_pipeline(
+            job_id="job_clk_no_time",
+            code="x = 1\n",
+            filename="x.py",
+            use_llm=False,
+            clock=lambda: next(ticks),
+        )
+
+        assert spy.calls == 0, (
+            f"clock 주입 시 모듈 time.time 이 {spy.calls}회 호출됨"
+        )
+
+    def test_default_path_uses_module_time_time(
+        self, stub_pipeline_io, monkeypatch,
+    ):
+        """``clock`` 미주입(default=None) 시 모듈 ``time.time`` 으로 elapsed 가
+        계산된다 — ``analyzer.pipeline.time`` 을 fake 로 교체해 default 경로가
+        여전히 모듈 레벨 import 를 통과함을 회귀 검증한다.
+        """
+        import analyzer.pipeline as pipeline_mod
+
+        class _FakeTimeModule:
+            def __init__(self, ticks):
+                self.calls = 0
+                self._ticks = iter(ticks)
+
+            def time(self):
+                self.calls += 1
+                return next(self._ticks)
+
+        fake_time = _FakeTimeModule([300.0, 302.5])
+        monkeypatch.setattr(pipeline_mod, "time", fake_time)
+
+        result = pipeline_mod.execute_pipeline(
+            job_id="job_default_clk",
+            code="x = 1\n",
+            filename="x.py",
+            use_llm=False,
+            # clock 미주입 — default None
+        )
+
+        assert result.result_data["duration_seconds"] == 2.5, (
+            f"default 경로 elapsed 회귀: "
+            f"{result.result_data['duration_seconds']}"
+        )
+        assert fake_time.calls == 2, (
+            "default 경로에서 모듈 time.time 가 정확히 2회(start/end) "
+            f"호출되지 않음: {fake_time.calls}회"
+        )
+
+    def test_existing_keyword_call_shape_preserved(self, stub_pipeline_io):
+        """``clock`` 인자 없이 기존 keyword 호출이 그대로 동작하고
+        결과 dict 의 키 셰이프가 보존된다."""
+        from analyzer.pipeline import execute_pipeline
+
+        result = execute_pipeline(
+            job_id="job_shape",
+            code="x = 1\n",
+            filename="x.py",
+            use_llm=False,
+            provider="gemini",
+            model="gemini-2.0-flash-lite",
+            multi_patch=False,
+        )
+
+        assert result.language == "python"
+        # PipelineResult 셰이프 보존
+        assert hasattr(result, "result_data")
+        assert hasattr(result, "llm_error")
+        assert hasattr(result, "db_error")
+
+        # result_data session dict 키 셰이프 보존
+        expected_keys = {
+            "session_id", "repo", "pr_number", "commit_sha", "branch",
+            "summary", "vulnerabilities", "patches",
+            "started_at", "completed_at", "duration_seconds",
+        }
+        assert expected_keys.issubset(result.result_data.keys()), (
+            f"result_data 키 회귀: "
+            f"누락={expected_keys - set(result.result_data.keys())}"
+        )
+        assert result.result_data["session_id"] == "job_shape"
+        # round(elapsed, 2) 셰이프 — float
+        assert isinstance(result.result_data["duration_seconds"], float)
+
+    def test_execute_pipeline_body_has_no_direct_time_time_call(self):
+        """``execute_pipeline`` 본체 AST 에 ``time.time()`` 직접 호출이
+        남아 있지 않다 — clock seam 우회 회귀 가드."""
+        import ast
+        import inspect as _inspect
+        from analyzer.pipeline import execute_pipeline
+
+        src = _inspect.getsource(execute_pipeline)
+        tree = ast.parse(src)
+
+        offenders: list[int] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "time"
+                and func.attr == "time"
+            ):
+                offenders.append(node.lineno)
+
+        assert offenders == [], (
+            f"execute_pipeline 본체에 time.time() 직접 호출이 남아 있다 "
+            f"(줄: {offenders}) — clock seam 우회"
+        )
