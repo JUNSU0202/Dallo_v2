@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-P 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-Q 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -33,7 +33,7 @@ Dallo 의 리팩터링은 **세 단계의 큰 흐름** 으로 진행되었다.
 | --- | --- | --- | --- |
 | **Wave 2 (A~S, 19 wave)** | API/라우터/서비스/부트스트랩/경로 안정화 | 단일 파일에 뭉친 책임을 라우터·서비스 계층으로 분리, 부트스트랩 부수효과 정리, 경로 안전성 강화 | `api/server.py` 거대 파일을 라우터/서비스 단위로 분해 |
 | **Wave 3 (A~J, 11 wave)** | analyzer/외부 의존 경계 추출 | subprocess·HTTP·시간 의존성을 어댑터(seam)로 분리, fakeable 테스트 가능한 구조로 전환 | `pip-audit`, Bandit, Semgrep, Sonar scanner, Sonar HTTP, polling clock 까지 모두 외부 경계 격리 |
-| **Wave 4 (A~P, 16 wave)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam + agent LLM retry sleeper seam + analyzer/validator 파일 I/O seam + DB clock seam | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam, ``DalloAgent`` LLM retry sleeper DI seam, ``BanditRunner``/``SemgrepRunner`` 파일 I/O 어댑터, ``TestRunner``/``SecurityChecker``/``SyntaxChecker`` 파일 쓰기 어댑터, DB ``DateTime`` default clock seam | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 + LLM retry 시계 경계 fakeable 화 + analyzer/validator 파일 시스템 경계 fakeable 화 + DB 시간 생성 경계 fakeable/deprecation-free 화 |
+| **Wave 4 (A~Q, 17 wave; 4-Q 는 문서 전용)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam + agent LLM retry sleeper seam + analyzer/validator 파일 I/O seam + DB clock seam + dormant GitHub client deferred 결정 기록 | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam, ``DalloAgent`` LLM retry sleeper DI seam, ``BanditRunner``/``SemgrepRunner`` 파일 I/O 어댑터, ``TestRunner``/``SecurityChecker``/``SyntaxChecker`` 파일 쓰기 어댑터, DB ``DateTime`` default clock seam, dormant ``integrations/github_client.py`` HTTP seam 의 Option A (DOC_ONLY) 결정 기록 (코드 변경 0) | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 + LLM retry 시계 경계 fakeable 화 + analyzer/validator 파일 시스템 경계 fakeable 화 + DB 시간 생성 경계 fakeable/deprecation-free 화 + 휴면 모듈의 활성화 전 deferred 상태를 audit 증거와 함께 명시 |
 
 핵심 원칙은 다음 네 가지다.
 
@@ -229,6 +229,7 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-N | `660c810` | Bandit/Semgrep 파일 I/O seam | `analyzer/file_io.py`, `analyzer/bandit_runner.py`, `analyzer/semgrep_runner.py`, `tests/test_bandit_file_io_seam.py`, `tests/test_semgrep_file_io_seam.py` | 결과 JSON 쓰기 + Semgrep snippet 원본 라인 읽기 경계를 ``FileIO`` 어댑터로 위임, keyword-only DI |
 | 4-O | `157a30d` (구현 `1cfcbcd`) | Validator 파일 쓰기 seam | `validator/file_io.py`, `validator/test_runner.py`, `validator/security_checker.py`, `validator/syntax_checker.py`, `tests/test_validator_file_io_seam.py` | sandbox 타깃 / 보안 재검증 임시 / flake8 임시 ``.py`` 쓰기 경계를 validator-local ``FileIO`` 어댑터로 위임, keyword-only DI |
 | 4-P | `d8bf187` (구현 `560a605`) | DB clock/deprecation seam | `db/clock.py`, `db/models.py`, `tests/test_db_clock_seam.py` | SQLAlchemy ``DateTime`` default 의 deprecated ``datetime.utcnow`` 직접 참조를 fakeable ``db.clock.now`` seam 으로 교체, naive UTC shape 보존 |
+| 4-Q | (문서 전용, 머지/푸시 없음) | dormant GitHub client deferred (Option A / DOC_ONLY) | `docs/refactoring/clean-architecture-wave-history.md` | Wave 4-C 에서 deferred 로 표시된 휴면 ``integrations/github_client.py`` 에 대한 read-only audit 결과(활성 caller 0)와 Option A 결정을 본 문서에 기록만 함. 코드/테스트/스키마/설정/lock/리포트/DB 변경 0건, 모듈은 미래 capability 보존을 위해 그대로 유지 |
 
 ---
 
@@ -1175,11 +1176,71 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 - Rollback: `git revert -m 1 d8bf187` (구현 커밋만 되돌릴 경우 `git revert 560a605`). 되돌리면 clock seam 과 신규 회귀 테스트는 사라지고 세 컬럼 default 는 `datetime.utcnow` 직접 참조로 돌아간다. 운영 저장 shape 는 rollback 전후 모두 naive datetime 이지만 Python 3.12+ deprecation warning 은 다시 발생할 수 있다.
 - 초보자용 설명: "DB 에 분석 기록을 저장할 때 ‘시간을 안 주면 지금 시간을 넣어줘’ 라는 기본값이 있다. 예전 코드는 그 기본값을 만들 때 `datetime.utcnow()` 라는 낡아가는 함수를 직접 불렀다. Wave 4-P 는 그 호출을 `db/clock.py` 라는 작은 시계 모듈로 옮겼다. 평소에는 똑같이 현재 UTC 시간을 만들지만, 테스트에서는 ‘지금은 2024-01-02 03:04:05 라고 치자’ 같은 가짜 시계를 끼워 넣을 수 있다. 그래서 시간 때문에 테스트가 흔들리지 않고, Python 이 `utcnow 는 이제 쓰지 마` 라고 경고하는 문제도 사라진다. 중요한 점은 DB/API 가 보여주는 시간 모양은 그대로라는 것 — timezone 표시 `+00:00` 을 새로 붙이지 않고 기존 naive datetime 모양을 지킨다."
 
+### Wave 4-Q — Dormant GitHub client deferred (문서 전용 / Option A)
+
+- 본 wave 의 유일한 산출물: 단일 docs-only 커밋 `docs(refactoring): record Wave 4-Q deferred GitHub client decision` (브랜치 `w4q-doc-only`). 머지 커밋 없음, 원격 push 없음, PR 없음, deploy 없음, 실 네트워크 호출 없음.
+- 본 wave 는 **read-only audit 결과와 사용자 승인된 Option A (DOC_ONLY) 결정을 기록만 하는 문서 전용 wave** 다. 운영 코드, 테스트, 스키마, 설정, dependency, lock 파일, 생성된 리포트, DB 파일, ``__pycache__`` 어디에도 변경이 없다.
+- 주요 파일/영역:
+  - `docs/refactoring/clean-architecture-wave-history.md` — 본 §8 의 Wave 4-Q 항목 신설, §5 타임라인 행 추가, §2 Executive Summary / §10 현재 상태 / 문서 버전 stamp 업데이트.
+  - 그 외 저장소 파일 변경 0: `integrations/github_client.py` 무변경, `integrations/github_pr_comment_adapter.py` 무변경, `tests/` 무변경, `shared/schemas.py` 무변경, `api/` / `analyzer/` / `agent/` / `validator/` / `db/` / `scripts/` / `.github/` 무변경, dependency / lock / migration 무변경.
+- Wave 4-Q 후보 모듈: `integrations/github_client.py` — Wave 4-C 에서 이미 *deferred legacy* 로 명시화된 휴면 HTTP 클라이언트. PR 메타데이터 조회, 변경 Python 파일 추출, PR 코멘트, 라인 단위 review 코멘트, Check Run 생성, GitHub Actions event 파싱 등의 미래 capability surface 를 모아 둔 모듈.
+- 이전 구조: Wave 4-C 이후 동일. 운영 PR 코멘트는 `scripts/post_pr_comment.py` → `integrations/github_pr_comment_adapter.py` (Wave 4-B 에서 fakeable HTTP seam 적용된 어댑터) 경로로 처리되며, 본 dormant 모듈은 운영 경로에서 완전히 우회된다.
+- Wave 4-Q audit 으로 재확인된 사실 (`/tmp/dallo-wave4q-readonly-audit.out.txt`):
+  - **활성 호출자 0건** — 전체 저장소에서 `from integrations.github_client import ...` / `import integrations.github_client` / `GitHubClient` 심볼 사용처 0건.
+  - **테스트 호출자 0건** — `tests/` 하위 어디에서도 `github_client` 미참조.
+  - **GitHub workflow 호출자 0건** — `.github/workflows/security-analysis.yml`, `.github/dallo-gate.yml` 모두 `github_client` 미참조.
+  - **문서 전용 언급**만 존재 (`TEAM_GUIDE.md`, `QUICKSTART.md`, 본 문서) — 모두 “보류/미사용” 상태로 표기 중.
+- 활성화 시(휴면 상태에서는 발현되지 않음) 노출될 위험 요소:
+  - top-level `import requests` — 인접 어댑터의 lazy `_default_http_client()` 패턴과 달리 import 시점에 `requests` 모듈을 정적으로 끌어온다.
+  - 모든 `requests.get` / `requests.post` 호출에 `timeout=` 인자 없음 → 활성화 시 무한 hang / 리소스 누수 가능.
+  - 주입 가능한 `http_client` seam 부재 → fake HTTP 클라이언트로 교체 불가, 단위 테스트가 실 네트워크에 의존하게 될 위험.
+  - raw `resp.raise_for_status()` / `resp.json()` 그대로 사용 → 호출 측이 응답 본문을 로깅할 경우 정보 노출 가능 (단, 토큰 자체는 Authorization 헤더로만 전달되어 평문 반환값 노출은 현재 없음).
+  - 미래 capability surface (PR metadata, changed files, line review comments, Check Runs, GitHub Actions event parsing) 의 반환 계약이 실제 consumer 없이 미정 상태.
+- 결정: **Option A / DOC_ONLY** (사용자 승인). 현재 wave 에서 구현(Option B: 휴면 모듈용 fakeable HTTP seam + explicit timeout + fake-client 테스트) 을 적용하지 않는다.
+  - 근거 1 — 활성 caller 0 이므로 휴면 상태에서 발현되는 실제 런타임 위험은 0 이다. timeout 부재/seam 부재는 import 되지 않는 한 어떤 호출 경로에도 영향을 주지 않는다.
+  - 근거 2 — 사용자가 **“미래에 코드를 추가할 수 있다”** 는 점을 명시했다. Check Run / line review 의 반환 계약을 실제 consumer 가 등장하기 전 미리 굳히면 활성화 시점에 breaking change 가 필요할 수 있다. 따라서 미래 GitHub client 의미론을 조기 동결하지 않는다.
+  - 근거 3 — Prior wave (4-B, 4-N, 4-O, 4-P) 의 seam 도입은 모두 **현재 사용 중인** 모듈을 대상으로 했다. 휴면 모듈에 seam 을 선제 적용하는 것은 그 정책과 부합하지 않는다 (YAGNI).
+  - 근거 4 — 본 결정은 가역적이다. 휴면 모듈을 코드 한 줄도 바꾸지 않고 그대로 보존하므로, 미래에 실 consumer 가 확정되는 시점에 Wave 4-Q′ 또는 4-R 로 최소 fakeable HTTP seam + explicit timeout + fake-client 테스트 + token 비누출 / 실 네트워크 미호출 회귀 가드를 추가하면 된다.
+- 변경 (문서 전용):
+  - 본 §8 에 Wave 4-Q 항목 신설 (현 항목).
+  - §5 타임라인 표에 Wave 4-Q 행 추가 — “문서 전용, 머지/푸시 없음, 코드 변경 0”.
+  - §2 Executive Summary 의 Wave 4 행을 `A~Q (17 wave; 4-Q 는 문서 전용)` 로 갱신.
+  - §10 “현재 상태” 헤더와 본문을 Wave 4-Q 시점으로 갱신.
+  - 문서 버전 stamp 를 Wave 4-Q (2026-05-11) 로 갱신.
+- 코드/계약 보존 (preserve, 미수정):
+  - `integrations/github_client.py` 한 줄도 변경하지 않는다. 사용자 의도(“코드가 나중에 추가될 수 있음”)를 존중하기 위함이며, Wave 4-C 의 docstring 경고(“활성화 전 fakeable HTTP seam, timeout, tests, token non-leak 필요. 신규 코드 직접 import 금지.”) 도 그대로 둔다.
+  - `tests/`, `shared/schemas.py`, `api/`, `analyzer/`, `agent/`, `validator/`, `db/`, `scripts/`, `.github/`, dependency / lock 파일, migration, 생성된 리포트, DB 파일, ``__pycache__`` 모두 변경 없음.
+  - 운영 PR 코멘트 경로(`scripts/post_pr_comment.py` → `integrations/github_pr_comment_adapter.py`) 동작 무변경.
+  - `TEAM_GUIDE.md` / `QUICKSTART.md` 의 “보류/미사용” 표시 무변경.
+- 클린 아키텍처 적합성: 클린 아키텍처는 “현재 활성 경계는 어댑터로 정리한다” 는 원칙과, “비활성 미래 surface 는 명시적 deferred 상태로 둔다” 는 원칙을 함께 포함한다. Wave 4-C 가 dormant 상태를 docstring 으로 명시화한 것이었다면, Wave 4-Q 는 사용자가 그 dormant 상태를 **현재 wave 흐름에서도 계속 유지하기로 명시 결정** 했다는 사실을 audit 증거(0 caller, 0 test, 0 workflow) 와 함께 기록한다. 본 wave 는 외부에서 본 입력/출력, HTTP 응답, CLI 메시지, 타임아웃, 한국어 에러 문구, 스키마, API 계약, 보안 정책을 한 줄도 바꾸지 않으므로 “behavior-preserving” 원칙을 가장 엄격하게 충족한다.
+- 검증 근거 (audit + 문서 변경 한정):
+  - Read-only audit 산출물: `/tmp/dallo-wave4q-readonly-audit.out.txt` — 활성 caller 0, 테스트 caller 0, workflow caller 0, 운영 경로는 어댑터 경유 확인, 휴면 모듈의 timeout/seam 부재를 audit 시점 사실로 기록.
+  - A/B 결정 검토 산출물: `/tmp/dallo-wave4q-ab-decision.out.txt` — Claude 권고 A (DOC_ONLY) 와 조건부 B 전환 트리거 (실 consumer 확정) 정의.
+  - 승인 로그: `/tmp/dallo-approval-log-wave4q.md` — Option A 사용자 승인, 코드 변경 0, push/PR/deploy/실 네트워크 호출 0.
+  - 본 wave 시작 시 baseline (`main`, `c0ea53d`): `pytest tests/ -q` → **770 passed, 1 warning** (Wave 4-P final 결과 그대로). 본 wave 는 코드/테스트 변경이 없으므로 테스트 재실행 의무가 없으며 baseline 값이 그대로 유지된다.
+  - 문서 변경만의 lightweight 검증: `git diff -- docs/refactoring/clean-architecture-wave-history.md` 으로 변경 범위가 본 문서 단일 파일에 한정되었음을 확인, `git status --short` 로 다른 저장소 파일에 미변경(워킹 트리 깨끗) 임을 확인.
+- 명시적 비적용 (의도적 비행동):
+  - `integrations/github_client.py` 코드 변경 비적용 — 사용자가 미래 추가 가능성을 보존하길 원함.
+  - 휴면 모듈용 HTTP seam / explicit timeout / fake-client 테스트 비적용 — Option B 는 실 consumer 가 확정될 때 별도 wave (4-Q′ / 4-R) 로 도입.
+  - 휴면 모듈 삭제 (Option C) 비적용 — Check Run / line review / changed-files 등 미래 capability surface 보존.
+  - GitHub push / PR / deploy / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 GitHub API 호출 / network 호출 비수행.
+  - `shared/schemas.py` / API / DB / migration / dependency / 워크플로우 / 환경 변수 정책 변경 비적용.
+- 활성화 재개 트리거 (resume condition): `create_check_run` 또는 라인 단위 review 코멘트 또는 그 외 본 클라이언트의 실제 consumer 가 계획·구현 단계에 들어가는 시점. 그 시점에 Wave 4-Q′ 또는 4-R 로 다음을 도입한다 (현재 wave 에서는 가설적 범위로만 기록).
+  - top-level `import requests` 를 lazy `_default_http_client()` 헬퍼로 이동.
+  - 모든 메서드에 keyword `http_client` 주입 seam 추가 (`github_pr_comment_adapter` 와 동일 패턴).
+  - 모든 HTTP 호출에 명시적 `timeout=` 지정.
+  - 응답 본문을 raw 노출 없이 정규화된 dict 로 반환하는 계약 정의 (Check Run / line review 포함).
+  - fake HTTP 클라이언트 기반 단위 테스트 + token 비누출 / 실 네트워크 미호출 회귀 가드 추가.
+- Rollback (가역성): 본 wave 는 단일 docs-only 커밋으로 구성된다. `git revert <docs commit>` 한 번으로 본 문서의 Wave 4-Q 기록 자체를 제거할 수 있고, 그 외 저장소 상태(코드/테스트/스키마/계약/보안 정책) 는 본 wave 전후가 동일하므로 revert 의 운영 영향은 0 이다 — 문서 항목만 사라진다. push / PR / deploy 가 수행되지 않았으므로 외부 가시 행위 되돌림도 필요 없다.
+- 초보자용 설명: "Wave 4-Q 는 **‘코드를 한 줄도 바꾸지 않는 wave’** 다. 우리는 `integrations/github_client.py` 라는 파일을 들여다봤다. 이 파일은 GitHub 와 통신할 수 있는 미래 기능들을 모아 둔 ‘아직 쓰지 않는 도구함’ 이다. 운영 환경의 PR 코멘트는 옆에 있는 `github_pr_comment_adapter.py` 가 처리하고 있고, 이 파일은 아무도 import 하지 않는다 (audit 으로 확인). 그래서 ‘활성화 전에 손보면 좋을 점’ (HTTP 호출에 timeout 을 안 박은 점, fake 로 갈아끼울 수 있는 seam 이 없는 점) 은 분명히 보이지만, **실제로 쓰지도 않는 상태에서 미래 모양을 미리 굳히는 건 오히려 위험할 수 있다** — 진짜 사용자가 나타났을 때 그 모양과 안 맞을 수 있기 때문이다. 그래서 사용자와 함께 ‘이번에는 코드를 안 건드리고, 다만 우리가 무엇을 보고 무엇을 결정했는지만 문서에 남기자’ 로 합의했다 (Option A / DOC_ONLY). 나중에 진짜 사용 사례가 생기면 그때 Wave 4-Q′ 같은 이름으로 timeout 박고, fake 로 갈아끼울 수 있는 seam 을 만들고, 토큰이 새지 않는지 테스트를 추가하면 된다.
+
+  GitHub **Check Run** 이 뭔지 잠깐 설명한다 — GitHub 의 한 커밋이나 PR 마다 ‘이 커밋에 대해 어떤 자동 검사를 돌렸고 결과가 무엇인지’ 를 GitHub UI 의 Checks 탭에 작은 보고 한 줄로 표시해 주는 단위가 Check Run 이다. 예를 들면 ‘Bandit 정적 분석: 성공 / 실패 / 주의 + 요약 메시지 + 자세히 보기 링크’ 같은 줄을 PR 페이지에서 바로 볼 수 있게 해 준다. GitHub Actions 워크플로 자체가 자동으로 만들어 주는 Check 와 별개로, 외부 도구가 GitHub REST API 를 호출해서 직접 Check Run 을 만들 수도 있다. 휴면 모듈의 `create_check_run` 메서드는 바로 이 ‘외부에서 Check Run 을 만들어 PR 결과를 GitHub UI 에 노출하는’ 미래 기능을 준비해 둔 자산이다. 지금은 호출하지 않지만, 활성화될 때를 대비해 보존한다."
+
 ---
 
 ## 9. 보안 강화 관점 요약
 
-이 절은 Wave 2-S → Wave 4-P 를 보안 관점으로 다시 본다.
+이 절은 Wave 2-S → Wave 4-Q 를 보안 관점으로 다시 본다 (Wave 4-Q 는 코드 변경 0 의 문서 전용 wave 이므로 본 절의 보안 속성은 Wave 4-P 시점과 동일하다 — 새로 추가되거나 약화된 보안 보장은 없다).
 
 ### 9.1 무엇이 줄어들었나
 
@@ -1222,19 +1283,25 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-## 10. 현재 상태 (Wave 4-P 시점)
+## 10. 현재 상태 (Wave 4-Q 시점)
 
-- 로컬 `main` 에 Wave 4-P 머지 커밋 `d8bf187` 까지 포함되었다 (Wave 4-P 구현 커밋 `560a605`, 그 직전 Wave 4-O 머지 커밋 `157a30d` / Wave 4-O 구현 커밋 `1cfcbcd`).
-  - Wave 4-P 는 Wave 4-O docs 동기화 커밋(`931807e`) 위에 단일 구현 커밋(`560a605`) 으로 worktree `/home/ubuntu/dallo-worktrees/w4p-db-clock-seam` (브랜치 `w4p-db-clock-seam`) 에서 추가된 뒤, local main 으로 머지(`d8bf187`) 되어 검증까지 완료되었다. push / PR / deploy 는 수행되지 않았다 (정책 유지).
-- 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출도 수행되지 않았다.
-- 마지막 검증된 targeted 테스트 결과 (post-merge main): `tests/test_db_clock_seam.py tests/test_api_contract.py -q` → **21 passed in 2.89s**.
-  - 마지막 검증된 full 테스트 결과 (post-merge main): ``pytest tests/ -q`` → **770 passed, 1 warning in 33.53s**. Wave 4-O 시점 765 → +5 신규 회귀 테스트 (``tests/test_db_clock_seam.py``). 남은 1 warning 은 기존 `tests/test_auth.py` 의 `asyncio.get_event_loop` deprecation 으로 본 wave 의 blocker 가 아니다. 기존 SQLAlchemy ``datetime.utcnow`` deprecation warning 은 Wave 4-P 대상 경로에서 제거되었다.
-  - Post-merge smoke: `clock.now().tzinfo is None`, 세 대상 SQLAlchemy defaults 가 module `db.clock`, function name `now` 로 연결됨을 확인.
-- Final 보안/scope 스캔 clean: 변경 diff 는 `db/clock.py`, `db/models.py`, `tests/test_db_clock_seam.py` 로 제한. `shared/schemas.py` / `api` / `analyzer` / `agent` / `validator` diff 0. `db/` 에 `datetime.utcnow()` / `default=datetime.utcnow` 재도입 없음. `bandit` / `semgrep` 새 이슈 없음. 테스트 후 `clock_seam_%` 잔여 DB row 0개.
-- Rollback: `git revert -m 1 d8bf187` (구현 커밋만 되돌릴 경우 `git revert 560a605`).
-- Rationale: `/tmp/dallo-wave4p-clean-architecture-rationale.md`. Approval log: `/tmp/dallo-approval-log-wave4p.md`.
+- 로컬 `main` 의 마지막 코드 변경 머지 커밋은 여전히 Wave 4-P 머지 커밋 `d8bf187` (Wave 4-P 구현 커밋 `560a605`) 이다. Wave 4-Q 는 **문서 전용 wave 로 코드/테스트/스키마/설정/lock/리포트/DB 변경이 0건** 이며, 본 wave 의 산출물은 docs-only 커밋 `docs(refactoring): record Wave 4-Q deferred GitHub client decision` 단 하나 (브랜치 `w4q-doc-only`, 머지/푸시 미수행) 다.
+  - Wave 4-Q audit 시작 시 baseline HEAD 는 `c0ea53d docs(refactoring): update Wave 4-P history` 였다. 본 wave 는 그 위에 단일 docs-only 커밋을 추가했을 뿐 main 으로의 머지/push 는 수행하지 않았다.
+- 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 GitHub API 호출 / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출도 수행되지 않았다.
+- 마지막 검증된 targeted 테스트 결과 (Wave 4-P post-merge main 기준, Wave 4-Q 동안 코드 미변경이므로 유효): `tests/test_db_clock_seam.py tests/test_api_contract.py -q` → **21 passed in 2.89s**.
+  - 마지막 검증된 full 테스트 결과 (Wave 4-P post-merge main 기준, Wave 4-Q audit 시작 시점 재확인 시 동일): ``pytest tests/ -q`` → **770 passed, 1 warning** (Wave 4-Q audit 재실행 시 `770 passed, 1 warning in 37.09s`). 남은 1 warning 은 기존 `tests/test_auth.py` 의 `asyncio.get_event_loop` deprecation 으로 본 wave 의 blocker 가 아니다.
+- Wave 4-Q 검증 (문서 전용):
+  - 코드 diff 0: `integrations/github_client.py` 무변경, `tests/` 무변경, `shared/schemas.py` 무변경, `api` / `analyzer` / `agent` / `validator` / `db` / `scripts` / `.github` 무변경.
+  - 문서 diff 는 본 `docs/refactoring/clean-architecture-wave-history.md` 단일 파일에 한정 (`git diff -- docs/refactoring/clean-architecture-wave-history.md`, `git status --short` 로 확인).
+  - 본 wave 동안 push / PR / deploy / 실 외부 호출 0건.
+- Rollback:
+  - Wave 4-Q (문서 전용): `git revert <docs-only commit>` — 본 문서의 Wave 4-Q 기록만 사라지고 다른 저장소 상태는 변하지 않는다 (코드/스키마/계약/보안 정책 영향 0).
+  - Wave 4-P (코드 변경): `git revert -m 1 d8bf187` (구현 커밋만 되돌릴 경우 `git revert 560a605`).
+- Rationale / Approval log:
+  - Wave 4-Q audit: `/tmp/dallo-wave4q-readonly-audit.out.txt`, A/B 결정 검토: `/tmp/dallo-wave4q-ab-decision.out.txt`, 승인 로그: `/tmp/dallo-approval-log-wave4q.md`.
+  - Wave 4-P rationale: `/tmp/dallo-wave4p-clean-architecture-rationale.md`, 승인 로그: `/tmp/dallo-approval-log-wave4p.md`.
 - 다음 권장 작업 후보 (어느 것도 아직 승인된 wave 가 아님 — 후보 단계):
-  - **Wave 4-Q (후보)** dormant GitHub client HTTP seam: 휴면 상태인 ``integrations/github_client.py`` 의 HTTP 경계를 ``github_pr_comment_adapter`` 와 동일한 어댑터 패턴으로 정리할지 검토.
+  - **Wave 4-Q′ / 4-R (조건부 후보, dormant GitHub client 활성화 트리거 발생 시)**: `integrations/github_client.py` 에 lazy HTTP 클라이언트 helper, keyword `http_client` 주입 seam, 모든 호출의 explicit `timeout=`, fake-client 기반 단위 테스트 + token 비누출 / 실 네트워크 미호출 회귀 가드를 도입. 트리거 — `create_check_run` / 라인 review / 그 외 실 consumer 가 계획 단계에 진입할 때.
   - DB test isolation 후속 후보: `tests/test_db_clock_seam.py` 가 local SQLite 에 synthetic row 를 쓰고 cleanup 하는 구조를 `tmp_path`/in-memory 엔진 기반으로 더 격리할지 검토.
   - 사설 PyPI/npm 레지스트리 capability grant wave (필요해질 때): pip 의 `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL` 와 npm 의 `NPM_CONFIG_REGISTRY` + `_authToken` 을 명시적 `DependencyScanner` 생성자 인자 + `build_child_env(extras=...)` 패턴으로 도입.
   - Sandbox pytest 격리 강화: 별도 user 또는 chroot 등 OS 수준 격리 검토 (현재는 환경 변수 통제만 강화).
@@ -1264,4 +1331,4 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-*문서 버전: Wave 4-P 시점 (2026-05-08).*
+*문서 버전: Wave 4-Q 시점 (2026-05-11). Wave 4-Q 는 코드 변경 0 의 문서 전용 wave 로 dormant `integrations/github_client.py` 에 대한 Option A (DOC_ONLY) 결정을 기록한다.*
