@@ -440,3 +440,252 @@ class TestExecutePipelineClockSeam:
             f"execute_pipeline 본체에 time.time() 직접 호출이 남아 있다 "
             f"(줄: {offenders}) — clock seam 우회"
         )
+
+
+# ============================================================
+# Wave 4-X: execute_pipeline file I/O seam
+# ============================================================
+
+
+class _FakeFileIO:
+    """``write_text`` 호출만 기록하는 더블 — 실제 디스크 쓰기 없음."""
+
+    def __init__(self) -> None:
+        self.write_text_calls: list[tuple[str, str]] = []
+
+    def write_text(self, path: str, content: str) -> None:
+        self.write_text_calls.append((path, content))
+
+
+class TestExecutePipelineFileIOSeam:
+    """``analyzer.pipeline.execute_pipeline`` 의 임시 파일 쓰기 경계를
+    keyword-only ``file_io`` 어댑터로 fakeable 화한 회귀 가드.
+
+    Wave 4-N (Bandit/Semgrep file I/O seam) 와 동일한 패턴:
+    ``file_io is None`` 일 때만 ``get_default_file_io()`` lazy default 를
+    사용 → 운영 동작 무변경, 테스트는 ``file_io=fake`` 로 임시 파일 쓰기를
+    실제 디스크 없이 검증.
+    """
+
+    @pytest.fixture
+    def stub_pipeline_io(self, monkeypatch):
+        """``execute_pipeline`` 의 외부 의존 단계 (정적 분석/DB 저장) 를 무력화.
+
+        실 semgrep/bandit/LLM/DB/network 호출이 발생하지 않도록 한다.
+        """
+        import analyzer.pipeline as pipeline_mod
+        monkeypatch.setattr(
+            pipeline_mod, "_run_static_analysis", lambda *a, **kw: [],
+        )
+        monkeypatch.setattr(
+            pipeline_mod, "_persist_to_db", lambda *a, **kw: None,
+        )
+
+    def test_file_io_param_is_keyword_only_with_default_none(self):
+        """``file_io`` 는 keyword-only 이고 default 는 ``None`` 이다."""
+        import inspect as _inspect
+        from analyzer.pipeline import execute_pipeline
+
+        sig = _inspect.signature(execute_pipeline)
+        assert "file_io" in sig.parameters, (
+            "execute_pipeline 에 file_io 인자가 없다"
+        )
+        param = sig.parameters["file_io"]
+        assert param.kind is _inspect.Parameter.KEYWORD_ONLY, (
+            f"file_io 는 keyword-only 이어야 한다 (got {param.kind})"
+        )
+        assert param.default is None, (
+            f"file_io default 는 None 이어야 한다 (got {param.default!r})"
+        )
+
+    def test_injected_file_io_receives_temp_path_and_code(
+        self, stub_pipeline_io, monkeypatch, tmp_path,
+    ):
+        """fake ``file_io`` 주입 시 ``write_text`` 가 임시 파일 경로 + 원본
+        코드를 정확히 받는다."""
+        import analyzer.pipeline as pipeline_mod
+
+        forced_tmpdir = str(tmp_path / "dallo_analyze_fixed")
+        os.makedirs(forced_tmpdir, exist_ok=True)
+        monkeypatch.setattr(
+            pipeline_mod.tempfile,
+            "mkdtemp",
+            lambda prefix=None: forced_tmpdir,
+        )
+
+        fake_io = _FakeFileIO()
+        code = "x = 1\n"
+        expected_path = os.path.join(forced_tmpdir, "x.py")
+
+        pipeline_mod.execute_pipeline(
+            job_id="job_fio_inject",
+            code=code,
+            filename="x.py",
+            use_llm=False,
+            file_io=fake_io,
+        )
+
+        assert len(fake_io.write_text_calls) == 1, (
+            f"file_io.write_text 가 정확히 1회 호출되어야 한다 "
+            f"(got {len(fake_io.write_text_calls)})"
+        )
+        path, content = fake_io.write_text_calls[0]
+        assert path == expected_path, (
+            f"file_io.write_text path 불일치: {path} != {expected_path}"
+        )
+        assert content == code, (
+            f"file_io.write_text content 불일치: {content!r} != {code!r}"
+        )
+
+    def test_injected_file_io_does_not_trigger_builtin_open_write(
+        self, stub_pipeline_io, monkeypatch, tmp_path,
+    ):
+        """fake ``file_io`` 주입 시 ``builtins.open(..., 'w')`` 트립와이어가
+        사용자 코드 임시 파일 경로로 호출되지 않는다."""
+        import builtins
+        import analyzer.pipeline as pipeline_mod
+
+        forced_tmpdir = str(tmp_path / "dallo_analyze_no_open")
+        os.makedirs(forced_tmpdir, exist_ok=True)
+        monkeypatch.setattr(
+            pipeline_mod.tempfile,
+            "mkdtemp",
+            lambda prefix=None: forced_tmpdir,
+        )
+
+        expected_path = os.path.join(forced_tmpdir, "x.py")
+        write_opens: list[tuple[str, str]] = []
+        real_open = builtins.open
+
+        def spy_open(file, mode="r", *args, **kwargs):
+            try:
+                m = mode if isinstance(mode, str) else ""
+                if "w" in m or "a" in m or "x" in m:
+                    write_opens.append((str(file), m))
+            except Exception:
+                pass
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", spy_open)
+
+        fake_io = _FakeFileIO()
+        pipeline_mod.execute_pipeline(
+            job_id="job_fio_no_open",
+            code="x = 1\n",
+            filename="x.py",
+            use_llm=False,
+            file_io=fake_io,
+        )
+
+        offenders = [(p, m) for p, m in write_opens if p == expected_path]
+        assert offenders == [], (
+            f"file_io 주입 경로에서 builtins.open 이 사용자 코드 임시 파일에 "
+            f"쓰기 모드로 호출됨: {offenders}"
+        )
+
+    def test_default_path_uses_get_default_file_io(
+        self, stub_pipeline_io, monkeypatch,
+    ):
+        """``file_io`` 미주입(default=None) 시 ``get_default_file_io()`` 로
+        해석된 어댑터의 ``write_text`` 가 호출된다 — 운영 동작 보존."""
+        from analyzer import file_io as file_io_mod
+
+        default_instance = file_io_mod.FileIO()
+        calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            default_instance,
+            "write_text",
+            lambda path, content: calls.append((path, content)),
+        )
+        monkeypatch.setattr(
+            file_io_mod,
+            "get_default_file_io",
+            lambda: default_instance,
+        )
+
+        import analyzer.pipeline as pipeline_mod
+        pipeline_mod.execute_pipeline(
+            job_id="job_default_fio",
+            code="y = 2\n",
+            filename="x.py",
+            use_llm=False,
+            # file_io 미주입 — default None
+        )
+
+        assert len(calls) == 1, (
+            f"default 경로 write_text 호출 회귀: {len(calls)} 회 "
+            f"(기대 1회)"
+        )
+        path, content = calls[0]
+        assert content == "y = 2\n", (
+            f"default 경로 write_text content 회귀: {content!r}"
+        )
+        assert path.endswith(os.sep + "x.py"), (
+            f"default 경로 write_text path 회귀: {path}"
+        )
+
+    def test_execute_pipeline_body_has_no_direct_open_w_call(self):
+        """``execute_pipeline`` 본체 AST 에 ``open(..., 'w')`` 직접 호출이
+        남아 있지 않다 — file_io seam 우회 회귀 가드."""
+        import ast
+        import inspect as _inspect
+        from analyzer.pipeline import execute_pipeline
+
+        src = _inspect.getsource(execute_pipeline)
+        tree = ast.parse(src)
+
+        offenders: list[int] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Name) and func.id == "open"):
+                continue
+            mode_node = None
+            if len(node.args) >= 2:
+                mode_node = node.args[1]
+            else:
+                for kw in node.keywords:
+                    if kw.arg == "mode":
+                        mode_node = kw.value
+                        break
+            if (
+                isinstance(mode_node, ast.Constant)
+                and isinstance(mode_node.value, str)
+                and "w" in mode_node.value
+            ):
+                offenders.append(node.lineno)
+
+        assert offenders == [], (
+            f"execute_pipeline 본체에 open(..., 'w') 직접 호출이 남아 있다 "
+            f"(줄: {offenders}) — file_io seam 우회"
+        )
+
+    def test_existing_call_shape_preserved_without_file_io(
+        self, stub_pipeline_io,
+    ):
+        """``file_io`` 인자 없이 기존 호출이 그대로 동작하고 결과 dict 의 키
+        셰이프가 보존된다."""
+        from analyzer.pipeline import execute_pipeline
+
+        result = execute_pipeline(
+            job_id="job_fio_shape",
+            code="x = 1\n",
+            filename="x.py",
+            use_llm=False,
+            provider="gemini",
+            model="gemini-2.0-flash-lite",
+            multi_patch=False,
+        )
+
+        assert result.language == "python"
+        expected_keys = {
+            "session_id", "repo", "pr_number", "commit_sha", "branch",
+            "summary", "vulnerabilities", "patches",
+            "started_at", "completed_at", "duration_seconds",
+        }
+        assert expected_keys.issubset(result.result_data.keys()), (
+            f"result_data 키 회귀: "
+            f"누락={expected_keys - set(result.result_data.keys())}"
+        )
+        assert result.result_data["session_id"] == "job_fio_shape"

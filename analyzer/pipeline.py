@@ -42,6 +42,7 @@ def execute_pipeline(
     on_progress: Optional[Callable[[str], None]] = None,
     *,
     clock: Optional[Callable[[], float]] = None,
+    file_io=None,
 ) -> PipelineResult:
     """
     분석 파이프라인을 실행합니다.
@@ -58,6 +59,10 @@ def execute_pipeline(
         clock: elapsed 측정용 fakeable 시계 (Wave 4-V seam).
             ``None`` 이면 모듈 ``time.time`` 을 사용 — 운영 동작 무변경.
             주입 시 start/end 모두 주입된 callable 로만 계산된다.
+        file_io: 사용자 코드 임시 파일 쓰기 경계 어댑터 (Wave 4-X seam).
+            ``None`` 이면 ``analyzer.file_io.get_default_file_io()`` 가 lazy
+            로 사용된다 — 운영 동작 무변경. 더블 주입 시 ``write_text(path,
+            content)`` 만 호출되며 실제 디스크 쓰기는 어댑터에 위임된다.
 
     Returns:
         PipelineResult
@@ -74,6 +79,11 @@ def execute_pipeline(
         raise ValueError("코드가 너무 큽니다 (최대 1MB)")
 
     time_provider = time.time if clock is None else clock
+    if file_io is None:
+        from analyzer.file_io import get_default_file_io
+        file_writer = get_default_file_io()
+    else:
+        file_writer = file_io
     start_time = time_provider()
     pipeline_result = PipelineResult()
     tmp_dir = tempfile.mkdtemp(prefix="dallo_analyze_")
@@ -81,8 +91,7 @@ def execute_pipeline(
     try:
         # 임시 파일 생성
         file_path = os.path.join(tmp_dir, filename)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(code)
+        file_writer.write_text(file_path, code)
 
         lang = _detect_language(filename)
         pipeline_result.language = lang
