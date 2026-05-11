@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 def _run(coro):
     """async 함수를 동기로 실행하는 헬퍼"""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 class TestVerifyApiKey:
