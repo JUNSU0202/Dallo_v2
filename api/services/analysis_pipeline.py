@@ -25,28 +25,35 @@ import json
 import os
 import uuid
 from datetime import datetime
-from typing import MutableMapping
+from typing import MutableMapping, Optional
 
 from api import result_sources
 from api.services import safe_paths
 
 
-def make_job_id() -> str:
+def make_job_id(*, now: Optional[datetime] = None) -> str:
     """``job_<YYYYmmdd_HHMMSS>_<6자hex>`` 형식의 잡 ID 를 생성한다.
 
     라우터의 기존 인라인 표현식과 동일한 셰이프를 보존한다 — 외부 클라이언트가
-    job_id prefix 로 분기하는 회귀를 차단한다.
+    job_id prefix 로 분기하는 회귀를 차단한다. ``now`` 미주입 시 모듈 ``datetime.now()``
+    를 호출하므로 운영 동작은 그대로다 (Wave 4-T fakeable clock seam).
     """
-    return f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    if now is None:
+        now = datetime.now()
+    return f"job_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
 
 def build_initial_job_meta(
     *, job_id: str, filename: str, code_length: int, use_llm: bool,
+    now: Optional[datetime] = None,
 ) -> dict:
     """POST /api/analyze 메모리 폴백용 잡 메타.
 
-    라우터가 만들던 dict 와 동일한 키 집합/기본값을 보존한다.
+    라우터가 만들던 dict 와 동일한 키 집합/기본값을 보존한다. ``now`` 미주입 시
+    ``datetime.now()`` 를 호출한다 (Wave 4-T fakeable clock seam).
     """
+    if now is None:
+        now = datetime.now()
     return {
         "job_id": job_id,
         "status": "queued",
@@ -54,20 +61,24 @@ def build_initial_job_meta(
         "filename": filename,
         "code_length": code_length,
         "use_llm": use_llm,
-        "created_at": datetime.now().isoformat(),
+        "created_at": now.isoformat(),
         "result": None,
         "error": None,
     }
 
 
-def build_upload_job_meta(*, job_id: str, filename: str) -> dict:
+def build_upload_job_meta(
+    *, job_id: str, filename: str, now: Optional[datetime] = None,
+) -> dict:
     """POST /api/analyze/file 업로드용 잡 메타 (셰이프 단순)."""
+    if now is None:
+        now = datetime.now()
     return {
         "job_id": job_id,
         "status": "queued",
         "step": "시작",
         "filename": filename,
-        "created_at": datetime.now().isoformat(),
+        "created_at": now.isoformat(),
         "result": None,
         "error": None,
     }

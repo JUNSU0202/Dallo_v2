@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-R 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 4-T 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -33,7 +33,7 @@ Dallo 의 리팩터링은 **세 단계의 큰 흐름** 으로 진행되었다.
 | --- | --- | --- | --- |
 | **Wave 2 (A~S, 19 wave)** | API/라우터/서비스/부트스트랩/경로 안정화 | 단일 파일에 뭉친 책임을 라우터·서비스 계층으로 분리, 부트스트랩 부수효과 정리, 경로 안전성 강화 | `api/server.py` 거대 파일을 라우터/서비스 단위로 분해 |
 | **Wave 3 (A~J, 11 wave)** | analyzer/외부 의존 경계 추출 | subprocess·HTTP·시간 의존성을 어댑터(seam)로 분리, fakeable 테스트 가능한 구조로 전환 | `pip-audit`, Bandit, Semgrep, Sonar scanner, Sonar HTTP, polling clock 까지 모두 외부 경계 격리 |
-| **Wave 4 (A~R, 18 wave; 4-Q 는 문서 전용)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam + agent LLM retry sleeper seam + analyzer/validator 파일 I/O seam + DB clock seam + dormant GitHub client deferred 결정 기록 + dormant GitHub client check run HTTP seam | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam, ``DalloAgent`` LLM retry sleeper DI seam, ``BanditRunner``/``SemgrepRunner`` 파일 I/O 어댑터, ``TestRunner``/``SecurityChecker``/``SyntaxChecker`` 파일 쓰기 어댑터, DB ``DateTime`` default clock seam, dormant ``integrations/github_client.py`` HTTP seam 의 Option A (DOC_ONLY) 결정 기록 (코드 변경 0), dormant ``integrations/github_client.py`` 에 lazy ``_default_http_client()`` + keyword ``http_client`` 주입 + explicit ``timeout`` + 정규화된 ``{status,message,data}`` 반환 + token 비누출 회귀 가드 도입 (Check Run 포함, 운영 wiring 은 deferred) | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 + LLM retry 시계 경계 fakeable 화 + analyzer/validator 파일 시스템 경계 fakeable 화 + DB 시간 생성 경계 fakeable/deprecation-free 화 + 휴면 모듈의 활성화 전 deferred 상태를 audit 증거와 함께 명시 + 휴면 모듈 활성화 직전 위험 (timeout 부재 / fake seam 부재 / raw raise_for_status 전파 / token 누출 가능 메시지) 을 코드 차원에서 선제 차단 |
+| **Wave 4 (A~T, 20 wave; 4-Q 는 문서 전용, 4-S 는 테스트 전용)** | validator·통합·토큰·환경 변수 보안 강화 + 공유 boundary 중립화 + sandbox 경로 하드닝 + security checker seam + agent LLM retry sleeper seam + analyzer/validator 파일 I/O seam + DB clock seam + dormant GitHub client deferred 결정 기록 + dormant GitHub client check run HTTP seam + auth test event loop helper 정리 + analysis pipeline clock seam | argv exposure 제거, child env sanitizer 도입, GitHub PR 코멘트 어댑터 분리, deferred legacy 표시, dependency scanner env sanitizer, validator child env sanitizer, ``command_env`` boundary 중립화 (analyzer → shared), validator sandbox 경로/심볼릭 링크 하드닝, ``SecurityChecker`` Bandit/Semgrep DI seam, ``DalloAgent`` LLM retry sleeper DI seam, ``BanditRunner``/``SemgrepRunner`` 파일 I/O 어댑터, ``TestRunner``/``SecurityChecker``/``SyntaxChecker`` 파일 쓰기 어댑터, DB ``DateTime`` default clock seam, dormant ``integrations/github_client.py`` HTTP seam 의 Option A (DOC_ONLY) 결정 기록 (코드 변경 0), dormant ``integrations/github_client.py`` 에 lazy ``_default_http_client()`` + keyword ``http_client`` 주입 + explicit ``timeout`` + 정규화된 ``{status,message,data}`` 반환 + token 비누출 회귀 가드 도입 (Check Run 포함, 운영 wiring 은 deferred) | 비밀(secret) 누출 가능 경로를 명시적 capability grant 모델로 재설계 + 공유 sanitizer 의 의존 방향 정정 + LLM 코드 격리 환경 강화 + 보안 재검증기 fakeable 화 + LLM retry 시계 경계 fakeable 화 + analyzer/validator 파일 시스템 경계 fakeable 화 + DB 시간 생성 경계 fakeable/deprecation-free 화 + 휴면 모듈의 활성화 전 deferred 상태를 audit 증거와 함께 명시 + 휴면 모듈 활성화 직전 위험 (timeout 부재 / fake seam 부재 / raw raise_for_status 전파 / token 누출 가능 메시지) 을 코드 차원에서 선제 차단 |
 
 핵심 원칙은 다음 네 가지다.
 
@@ -231,6 +231,8 @@ Wave 4-D 이후의 흐름은 “외부 도구가 부모 프로세스에 있는 �
 | 4-P | `d8bf187` (구현 `560a605`) | DB clock/deprecation seam | `db/clock.py`, `db/models.py`, `tests/test_db_clock_seam.py` | SQLAlchemy ``DateTime`` default 의 deprecated ``datetime.utcnow`` 직접 참조를 fakeable ``db.clock.now`` seam 으로 교체, naive UTC shape 보존 |
 | 4-Q | `b50bad8` (구현 `79b3eb1`) | dormant GitHub client deferred (Option A / DOC_ONLY) | `docs/refactoring/clean-architecture-wave-history.md` | Wave 4-C 에서 deferred 로 표시된 휴면 ``integrations/github_client.py`` 에 대한 read-only audit 결과(활성 caller 0)와 Option A 결정을 본 문서에 기록만 함. 코드/테스트/스키마/설정/lock/리포트/DB 변경 0건, 모듈은 미래 capability 보존을 위해 그대로 유지. 로컬 `main` 통합 완료, 원격 push/PR/deploy/실 외부 호출 미수행 |
 | 4-R | (구현 커밋 미머지; 브랜치 `w4r-github-client-seam`) | dormant GitHub client check run HTTP seam | `integrations/github_client.py`, `tests/test_github_client_seam.py` | Wave 4-Q 에서 Option A 로 보류했던 휴면 ``integrations/github_client.py`` 에, 활성화 트리거가 실제 발생하기 전 안전 비용을 미리 지불. top-level ``import requests`` 제거 + lazy ``_default_http_client()`` 헬퍼, keyword ``http_client`` 주입 seam, 모든 HTTP 호출의 explicit ``timeout``, raw ``raise_for_status()`` 대신 ``{"status","message","data"}`` 정규화 반환, 실패 메시지에 status code 만 노출 (body/token 비포함), ``create_check_run`` payload 의 GitHub Check Runs REST 모양 보존, 25건 신규 fake-client 회귀 테스트. **운영 wiring (`scripts/post_check_run.py`, `.github/workflows/*`) 은 본 wave 에서 도입하지 않음**, 모듈은 active caller 0 인 deferred 자산으로 그대로 유지 |
+| 4-S | `777e13a` (구현 `f155910`) | auth test event loop helper 정리 | `tests/test_auth.py` (테스트 전용) | Wave 4-R 직후 잔여 `asyncio.get_event_loop()` deprecation warning 1건 해소를 위해 테스트 helper 만 정정. 운영 코드/계약/스키마 변경 0. |
+| 4-T | (구현 커밋 본 wave) | analysis pipeline clock seam | `api/services/analysis_pipeline.py`, `tests/test_api_analysis_pipeline_service.py` | ``make_job_id`` / ``build_initial_job_meta`` / ``build_upload_job_meta`` 의 ``datetime.now()`` 경계를 keyword-only ``now: Optional[datetime] = None`` 인자로 fakeable 화. 미주입 시 모듈 ``datetime.now()`` 를 그대로 호출하므로 운영 동작/잡 ID 셰이프/잡 메타 키 셋 동일. 라우터/외부 caller 미수정. 신규 회귀 가드 10건 (`TestClockSeam`). |
 
 ---
 
@@ -1238,6 +1240,44 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
   GitHub **Check Run** 이 뭔지 잠깐 설명한다 — GitHub 의 한 커밋이나 PR 마다 ‘이 커밋에 대해 어떤 자동 검사를 돌렸고 결과가 무엇인지’ 를 GitHub UI 의 Checks 탭에 작은 보고 한 줄로 표시해 주는 단위가 Check Run 이다. 예를 들면 ‘Bandit 정적 분석: 성공 / 실패 / 주의 + 요약 메시지 + 자세히 보기 링크’ 같은 줄을 PR 페이지에서 바로 볼 수 있게 해 준다. GitHub Actions 워크플로 자체가 자동으로 만들어 주는 Check 와 별개로, 외부 도구가 GitHub REST API 를 호출해서 직접 Check Run 을 만들 수도 있다. 휴면 모듈의 `create_check_run` 메서드는 바로 이 ‘외부에서 Check Run 을 만들어 PR 결과를 GitHub UI 에 노출하는’ 미래 기능을 준비해 둔 자산이다. 지금은 호출하지 않지만, 활성화될 때를 대비해 보존한다."
 
+### Wave 4-T — Analysis pipeline clock seam
+
+- 브랜치: `w4t-analysis-pipeline-clock`. 본 wave 는 `api/services/analysis_pipeline.py` 의 잡 ID 생성 / 잡 메타 빌더 세 함수의 ``datetime.now()`` 경계를 keyword-only ``now`` 인자로 fakeable 화한 마이크로 wave 다.
+- 주요 파일/영역:
+  - `api/services/analysis_pipeline.py` — ``make_job_id(*, now=None)``, ``build_initial_job_meta(..., now=None)``, ``build_upload_job_meta(..., now=None)``. ``now is None`` 분기로 기존 ``datetime.now()`` 호출을 보존.
+  - `tests/test_api_analysis_pipeline_service.py` — ``TestClockSeam`` 클래스 10 케이스: fixed ``now`` 가 job_id prefix 를 결정적으로 만든다 / uuid suffix 는 여전히 unique / ``now`` 는 keyword-only / 모듈 ``datetime`` monkeypatch 로 default 경로 회귀 검증 / 두 잡 메타 빌더가 fixed ``now.isoformat()`` 을 ``created_at`` 으로 반영 / default 경로 동일성.
+- 이전 구조 (Wave 4-S post-state): 세 함수가 모두 inline ``datetime.now()`` 호출에 의존했고, 외부에서 시각을 주입할 수단이 없었다. 단위 테스트가 ``api.services.analysis_pipeline.datetime`` 자체를 monkeypatch 하지 않으면 잡 ID prefix / ``created_at`` 값을 결정적으로 검증할 수 없었다.
+- 문제/위험 (활성화 시):
+  - 잡 ID/잡 메타에 “시각” 이 들어가는 자리는 회귀 가드를 붙이기가 어렵다 — fixed ``now`` 가 없으면 test 가 wall-clock 에 의존하거나 정규식 매칭으로 후퇴.
+  - 같은 모듈 안에서 시각 의존이 inline 으로 박혀 있으면, 후속 wave (예: 잡 ID 충돌 디버깅) 가 시각을 통제하기 위해 또 다시 module-level monkeypatch 를 강요받는다.
+- 변경 (요약):
+  - 세 함수 모두 keyword-only ``now: Optional[datetime] = None`` 추가. ``now is None`` 일 때만 ``datetime.now()`` 를 호출 → 운영 동작 무변경.
+  - ``make_job_id`` 의 strftime/uuid 포맷, ``build_initial_job_meta`` 의 키 집합/기본값, ``build_upload_job_meta`` 의 키 집합/기본값 모두 보존.
+  - ``__all__`` 무변경 — public surface 셰이프는 그대로다.
+  - 라우터/태스크/외부 caller 무수정 — 새 ``now`` 인자는 모두 keyword-only 이며 default 가 ``None`` 이므로 기존 호출 그대로 통과한다.
+- 클린 아키텍처 적합성: Wave 3-J (sonar polling clock), Wave 4-M (LLM retry sleeper), Wave 4-P (DB ``DateTime`` default clock) 가 도입한 “시계 경계 fakeable 화” 패턴을, 같은 디렉토리(`api/services/`) 의 잡 ID/잡 메타 빌더에 균일 적용한다. 외부 caller 의 의존 그래프나 책임 경계는 변하지 않는다 — 서비스 모듈은 여전히 FastAPI/api.server 를 import 하지 않고, 라우터는 새 인자를 모르고도 정상 동작한다.
+- 보존된 동작 / 계약 (preserve, 미변경):
+  - ``make_job_id()`` 반환 문자열 셰이프 ``job_<YYYYmmdd>_<HHMMSS>_<6hex>``.
+  - ``build_initial_job_meta`` 의 모든 키 (``job_id``, ``status``, ``step``, ``filename``, ``code_length``, ``use_llm``, ``created_at``, ``result``, ``error``) 와 기본값.
+  - ``build_upload_job_meta`` 의 모든 키 (``job_id``, ``status``, ``step``, ``filename``, ``created_at``, ``result``, ``error``) 와 기본값.
+  - ``execute_analysis_job`` 본체와 라우터 위임 동작 — 본 wave 의 diff 에 등장하지 않는다.
+  - ``shared/schemas.py`` / API / DB / migration / dependency / 워크플로우 / 환경 변수 정책 변경 0.
+- 검증 근거:
+  - Worktree pre-implementation RED: ``tests/test_api_analysis_pipeline_service.py::TestClockSeam -q`` → **7 failed, 3 passed** (`/tmp/dallo-wave4t-red.out.txt`). 실패 사유 분포: ``now`` 키워드 미수용 (``TypeError``) / ``inspect.signature`` 에 ``now`` 부재 / fixed-now prefix 검증 불가. 통과 3건은 default 경로가 모듈 레벨 ``datetime`` 을 통과한다는 행동 보존 가드 (현 코드도 이미 모듈 레벨 ``datetime`` import 를 통과하므로 monkeypatch 가 작동).
+  - Worktree targeted: `pytest tests/test_api_analysis_pipeline_service.py -q` → **23 passed in 0.34s** (Wave 4-S post-state 13 → +10 신규 회귀 테스트).
+  - Worktree full: `pytest tests/ -q` → **805 passed in 35.94s** (Wave 4-S post-state 795 → +10 신규 회귀 테스트, 0 warning).
+  - 실 외부 호출 0건. 본 wave 동안 push / PR / deploy / 실 GitHub API / 실 LLM / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출 모두 수행되지 않았다.
+  - 안전 grep: 본 diff 의 추가 라인에 ``os.system(`` / ``shell=True`` / ``eval(`` / ``exec(`` / ``pickle.loads?(`` 0건, 시크릿-유사 ``(api_key|secret|password|token|passwd)\s*=\s*"…"`` 0건.
+- 명시적 비적용 (의도적 비행동):
+  - 라우터 / 태스크 / 외부 caller 호출부 수정 비적용 — 새 ``now`` 인자는 default ``None`` 이라 기존 caller 가 변경 없이 통과.
+  - ``execute_analysis_job`` 의 ``REPORTS_DIR`` 호출 시점 / on_progress 콜백 / 결과 dict 직렬화 / 리포트 생성 로직 수정 비적용.
+  - 새 의존(예: 별도 clock 모듈) 도입 비적용 — 본 wave 는 시그니처 한 칸만 추가하는 최소 변경.
+  - dependency / lock 파일 변경 비적용.
+  - `shared/schemas.py` / API / DB / migration 변경 비적용.
+  - GitHub push / PR / deploy / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 GitHub API 호출 / network 호출 비수행.
+- Rollback (가역성): 본 wave 는 단일 구현 커밋 `refactor(api): add Wave 4-T analysis pipeline clock seam` 로 구성된다. `git revert <commit>` 로 정확히 되돌리면 `api/services/analysis_pipeline.py` 의 세 함수가 Wave 4-S post-state (``now`` 인자 없는 inline ``datetime.now()`` 호출) 로 돌아가고, ``TestClockSeam`` 테스트 클래스가 사라진다. 운영 호출자가 새 ``now`` 인자를 쓰지 않으므로 revert 의 운영 영향은 0 이다.
+- 초보자용 설명: "기존에는 잡 ID 와 잡 메타의 ``created_at`` 시각을 만들 때 무조건 ‘지금 이 순간’ 의 시계를 봤다. 그래서 테스트가 ‘만약 시계가 2026년 1월 2일 03:04:05 라면 잡 ID 가 정확히 어떻게 생겨야 하는가?’ 같은 질문을 하려면, 테스트 코드가 모듈 전체의 ``datetime`` 을 통째로 갈아끼우는 무거운 monkeypatch 를 매번 해야 했다. Wave 4-T 는 세 함수에 ``now=...`` 라는 작은 키워드 구멍을 뚫었다. 평소에는 (운영에서는) ``now`` 를 안 넘기면 예전처럼 ``datetime.now()`` 가 호출된다 — 잡 ID 모양도, 잡 메타 키 셋도 한 글자도 바뀌지 않는다. 다만 테스트만은 ``make_job_id(now=fixed)`` 라고 부르면 시각이 결정적으로 고정되어, prefix 가 정확히 어떻게 생겨야 하는지를 깔끔하게 검증할 수 있게 됐다. 같은 ``now`` 를 여러 번 넣어도 uuid 6자 hex suffix 가 매번 달라 잡 ID 가 충돌하지 않는다는 사실도 함께 가드한다. 운영 라우터는 ``now`` 를 알 필요가 없고 기존 호출 그대로 통과하니, 호출자 코드에는 어떤 후속 작업도 필요 없다."
+
 ### Wave 4-R — Dormant GitHub client check run HTTP seam
 
 - 본 wave 의 산출물: 단일 구현 커밋 `refactor(github): Wave 4-R add check run HTTP seam` (브랜치 `w4r-github-client-seam`). 본 머지는 로컬 `main` 으로 통합되지 않은 채 branch-level 에서만 존재하며, 원격 push / PR / deploy / 실 외부 호출은 수행되지 않았다.
@@ -1336,7 +1376,18 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-## 10. 현재 상태 (Wave 4-R 시점)
+## 10. 현재 상태 (Wave 4-T 시점)
+
+- Wave 4-T 는 **분석 파이프라인 서비스 (`api/services/analysis_pipeline.py`)** 의 잡 ID/잡 메타 빌더 세 함수에 fakeable clock seam 을 도입한 마이크로 wave 다 (브랜치 `w4t-analysis-pipeline-clock`). 본 wave baseline HEAD 는 `777e13a merge: integrate Wave 4-S auth test event loop cleanup`.
+- 작업 트리는 `api/services/analysis_pipeline.py` 수정 1건 + `tests/test_api_analysis_pipeline_service.py` 수정 1건 (``TestClockSeam`` 10 케이스 추가) 로 한정된다. `shared/schemas.py` 무변경, `api/routers/` / `analyzer/` / `agent/` / `validator/` / `db/` / `scripts/` / `.github/` / dependency / lock / migration 무변경.
+- 마지막 검증된 결과 (Wave 4-T worktree 기준):
+  - RED-first: `pytest tests/test_api_analysis_pipeline_service.py::TestClockSeam -q` → **7 failed, 3 passed in 0.13s** (`/tmp/dallo-wave4t-red.out.txt`).
+  - Targeted: `pytest tests/test_api_analysis_pipeline_service.py -q` → **23 passed in 0.34s** (Wave 4-S post-state 13 → +10).
+  - Full: `pytest tests/ -q` → **805 passed in 35.94s** (Wave 4-S post-state 795 → +10, 0 warning).
+- 본 wave 동안 push / PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 GitHub API 호출 / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출 모두 수행되지 않았다.
+- Rollback (Wave 4-T): `git revert <Wave 4-T 구현 커밋>` 로 정확히 되돌리면 `api/services/analysis_pipeline.py` 의 세 함수가 Wave 4-S post-state (``now`` 인자 없는 inline ``datetime.now()``) 로 돌아가고 ``TestClockSeam`` 클래스가 사라진다. 운영 caller 는 새 인자를 쓰지 않으므로 revert 의 운영 영향 0.
+
+## 10.bis 이전 상태 (Wave 4-R 시점, 참고)
 
 - 로컬 `main` 의 마지막 코드 변경 머지 커밋은 여전히 Wave 4-P 머지 커밋 `d8bf187` (Wave 4-P 구현 커밋 `560a605`) 이다. Wave 4-Q 는 문서 전용 wave 로 머지 커밋 `b50bad8` (구현 `79b3eb1`) 까지 로컬 `main` 으로 통합되어 있으며, 후속 post-merge 문서 sync 커밋 `a6a7de6` 와 wording-fix 커밋 `0e68090` 가 main 에 함께 쌓여 있다.
 - Wave 4-R 은 **branch-level wave** 다. 브랜치 `w4r-github-client-seam` 위에 단일 구현 커밋 `refactor(github): Wave 4-R add check run HTTP seam` 로만 존재하며, 로컬 `main` 으로의 머지·원격 push·PR·deploy·실 외부 호출은 수행되지 않았다.
@@ -1389,4 +1440,4 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ---
 
-*문서 버전: Wave 4-R 시점 (2026-05-11). Wave 4-R 은 dormant `integrations/github_client.py` 에 lazy `_default_http_client()` + keyword `http_client` 주입 seam + explicit `timeout` + 정규화된 `{"status","message","data"}` 반환 + token 비누출 회귀 가드를 도입한 branch-level wave 다 (`tests/test_github_client_seam.py` 25 케이스 신규). 운영 wiring (`scripts/post_check_run.py`, `.github/workflows/*`) 은 도입하지 않았고 모듈 active caller 는 여전히 0 이다. 머지/원격 push/PR/deploy/실 외부 호출 미수행.*
+*문서 버전: Wave 4-T 시점 (2026-05-11). Wave 4-T 는 `api/services/analysis_pipeline.py` 의 ``make_job_id`` / ``build_initial_job_meta`` / ``build_upload_job_meta`` 세 함수에 keyword-only ``now: Optional[datetime] = None`` fakeable clock seam 을 도입한 마이크로 wave 다 (``TestClockSeam`` 10 케이스 신규). default ``None`` 분기로 운영 동작 무변경 — 잡 ID 셰이프 / 잡 메타 키 셋 / 라우터 caller 모두 미수정. `shared/schemas.py` 무변경. 머지/원격 push/PR/deploy/실 외부 호출 미수행.*

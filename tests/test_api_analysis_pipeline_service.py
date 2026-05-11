@@ -23,6 +23,7 @@ import ast
 import inspect
 import json
 import os
+from datetime import datetime
 
 import pytest
 
@@ -113,6 +114,134 @@ class TestJobIdAndMetaBuilders:
         assert meta["filename"] == "upload.py"
         assert meta["result"] is None
         assert meta["error"] is None
+
+
+# ============================================================
+# Wave 4-T: fakeable clock seam
+# ============================================================
+
+class TestClockSeam:
+    """``make_job_id`` / ``build_initial_job_meta`` / ``build_upload_job_meta`` 의
+    ``datetime.now()`` 경계를 keyword-only ``now`` 인자로 fakeable 화한 회귀 가드.
+    """
+
+    def test_make_job_id_accepts_fixed_now(self):
+        from api.services.analysis_pipeline import make_job_id
+
+        fixed = datetime(2026, 1, 2, 3, 4, 5)
+        jid = make_job_id(now=fixed)
+        # ``job_<YYYYmmdd>_<HHMMSS>_<6hex>`` shape 보존, prefix 결정적
+        assert jid.startswith("job_20260102_030405_"), (
+            f"fixed now prefix 회귀: {jid}"
+        )
+        # suffix 길이만 회귀 검증 — uuid 6자 hex
+        assert len(jid) == len("job_20260102_030405_") + 6
+
+    def test_make_job_id_now_is_keyword_only(self):
+        from api.services.analysis_pipeline import make_job_id
+
+        sig = inspect.signature(make_job_id)
+        assert "now" in sig.parameters, "make_job_id 에 now 인자가 없다"
+        assert (
+            sig.parameters["now"].kind is inspect.Parameter.KEYWORD_ONLY
+        ), "now 는 keyword-only 이어야 한다"
+        # positional 호출은 거부
+        with pytest.raises(TypeError):
+            make_job_id(datetime(2026, 1, 2, 3, 4, 5))  # type: ignore[misc]
+
+    def test_make_job_id_with_fixed_now_keeps_unique_uuid_suffix(self):
+        from api.services.analysis_pipeline import make_job_id
+
+        fixed = datetime(2026, 1, 2, 3, 4, 5)
+        ids = {make_job_id(now=fixed) for _ in range(20)}
+        # 같은 ``now`` 에서도 uuid suffix 가 다르므로 모두 유니크
+        assert len(ids) == 20
+
+    def test_make_job_id_default_path_uses_module_datetime(self, monkeypatch):
+        """``now`` 미주입 시 모듈 ``datetime.now()`` 가 그대로 사용된다.
+
+        ``api.services.analysis_pipeline.datetime`` 을 fake 로 교체해 default
+        경로가 여전히 module 레벨 import 를 통과함을 회귀 검증한다.
+        """
+        import api.services.analysis_pipeline as svc
+
+        class _FakeDT:
+            @staticmethod
+            def now():
+                return datetime(2026, 6, 7, 8, 9, 10)
+
+        monkeypatch.setattr(svc, "datetime", _FakeDT)
+        jid = svc.make_job_id()
+        assert jid.startswith("job_20260607_080910_"), (
+            f"default 경로 datetime.now 회귀: {jid}"
+        )
+
+    def test_build_initial_job_meta_uses_fixed_now(self):
+        from api.services.analysis_pipeline import build_initial_job_meta
+
+        fixed = datetime(2026, 1, 2, 3, 4, 5)
+        meta = build_initial_job_meta(
+            job_id="job_x", filename="a.py", code_length=1, use_llm=False,
+            now=fixed,
+        )
+        assert meta["created_at"] == fixed.isoformat()
+
+    def test_build_initial_job_meta_now_is_keyword_only(self):
+        from api.services.analysis_pipeline import build_initial_job_meta
+
+        sig = inspect.signature(build_initial_job_meta)
+        assert "now" in sig.parameters
+        assert (
+            sig.parameters["now"].kind is inspect.Parameter.KEYWORD_ONLY
+        ), "build_initial_job_meta 의 now 는 keyword-only 이어야 한다"
+
+    def test_build_initial_job_meta_default_path_uses_module_datetime(
+        self, monkeypatch,
+    ):
+        import api.services.analysis_pipeline as svc
+
+        class _FakeDT:
+            @staticmethod
+            def now():
+                return datetime(2026, 6, 7, 8, 9, 10)
+
+        monkeypatch.setattr(svc, "datetime", _FakeDT)
+        meta = svc.build_initial_job_meta(
+            job_id="job_x", filename="a.py", code_length=1, use_llm=False,
+        )
+        assert meta["created_at"] == "2026-06-07T08:09:10"
+
+    def test_build_upload_job_meta_uses_fixed_now(self):
+        from api.services.analysis_pipeline import build_upload_job_meta
+
+        fixed = datetime(2026, 1, 2, 3, 4, 5)
+        meta = build_upload_job_meta(
+            job_id="job_y", filename="b.py", now=fixed,
+        )
+        assert meta["created_at"] == fixed.isoformat()
+
+    def test_build_upload_job_meta_now_is_keyword_only(self):
+        from api.services.analysis_pipeline import build_upload_job_meta
+
+        sig = inspect.signature(build_upload_job_meta)
+        assert "now" in sig.parameters
+        assert (
+            sig.parameters["now"].kind is inspect.Parameter.KEYWORD_ONLY
+        ), "build_upload_job_meta 의 now 는 keyword-only 이어야 한다"
+
+    def test_build_upload_job_meta_default_path_uses_module_datetime(
+        self, monkeypatch,
+    ):
+        import api.services.analysis_pipeline as svc
+
+        class _FakeDT:
+            @staticmethod
+            def now():
+                return datetime(2026, 6, 7, 8, 9, 10)
+
+        monkeypatch.setattr(svc, "datetime", _FakeDT)
+        meta = svc.build_upload_job_meta(job_id="job_y", filename="b.py")
+        assert meta["created_at"] == "2026-06-07T08:09:10"
 
 
 # ============================================================
