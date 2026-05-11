@@ -1231,7 +1231,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - 모든 HTTP 호출에 명시적 `timeout=` 지정.
   - 응답 본문을 raw 노출 없이 정규화된 dict 로 반환하는 계약 정의 (Check Run / line review 포함).
   - fake HTTP 클라이언트 기반 단위 테스트 + token 비누출 / 실 네트워크 미호출 회귀 가드 추가.
-- Rollback (가역성): 본 wave 는 단일 docs-only 구현 커밋 `79b3eb1` 과 이를 로컬 `main` 으로 통합한 머지 커밋 `b50bad8` 로 구성된다. 현재 main 에서는 `git revert -m 1 b50bad8` 한 번으로 본 문서의 Wave 4-Q 기록 자체를 제거할 수 있다 (구현 커밋만 되돌릴 경우 `git revert 79b3eb1`). 그 외 저장소 상태(코드/테스트/스키마/계약/보안 정책) 는 본 wave 전후가 동일하므로 revert 의 운영 영향은 0 이다 — 문서 항목만 사라진다. push / PR / deploy 가 수행되지 않았으므로 외부 가시 행위 되돌림도 필요 없다.
+- Rollback (가역성): 본 wave 는 단일 docs-only 구현 커밋 `79b3eb1` 과 이를 로컬 `main` 으로 통합한 머지 커밋 `b50bad8` 로 구성된다. 머지 이후 본 문서에 적용된 post-merge 문서 sync 커밋 `a6a7de6` 및 후속 wording-fix 커밋(있다면) 을 먼저 `git revert <sync/wording-fix commit>` 순서대로 되돌린 뒤 `git revert -m 1 b50bad8` 로 본 wave 머지를 되돌리면 본 문서의 Wave 4-Q 기록 자체를 제거할 수 있다 (구현 커밋만 되돌릴 경우 `git revert 79b3eb1`). 그 외 저장소 상태(코드/테스트/스키마/계약/보안 정책) 는 본 wave 전후가 동일하므로 revert 의 운영 영향은 0 이다 — 문서 항목만 사라진다. push / PR / deploy 가 수행되지 않았으므로 외부 가시 행위 되돌림도 필요 없다.
 - 초보자용 설명: "Wave 4-Q 는 **‘코드를 한 줄도 바꾸지 않는 wave’** 다. 우리는 `integrations/github_client.py` 라는 파일을 들여다봤다. 이 파일은 GitHub 와 통신할 수 있는 미래 기능들을 모아 둔 ‘아직 쓰지 않는 도구함’ 이다. 운영 환경의 PR 코멘트는 옆에 있는 `github_pr_comment_adapter.py` 가 처리하고 있고, 이 파일은 아무도 import 하지 않는다 (audit 으로 확인). 그래서 ‘활성화 전에 손보면 좋을 점’ (HTTP 호출에 timeout 을 안 박은 점, fake 로 갈아끼울 수 있는 seam 이 없는 점) 은 분명히 보이지만, **실제로 쓰지도 않는 상태에서 미래 모양을 미리 굳히는 건 오히려 위험할 수 있다** — 진짜 사용자가 나타났을 때 그 모양과 안 맞을 수 있기 때문이다. 그래서 사용자와 함께 ‘이번에는 코드를 안 건드리고, 다만 우리가 무엇을 보고 무엇을 결정했는지만 문서에 남기자’ 로 합의했다 (Option A / DOC_ONLY). 나중에 진짜 사용 사례가 생기면 그때 Wave 4-Q′ 같은 이름으로 timeout 박고, fake 로 갈아끼울 수 있는 seam 을 만들고, 토큰이 새지 않는지 테스트를 추가하면 된다.
 
   GitHub **Check Run** 이 뭔지 잠깐 설명한다 — GitHub 의 한 커밋이나 PR 마다 ‘이 커밋에 대해 어떤 자동 검사를 돌렸고 결과가 무엇인지’ 를 GitHub UI 의 Checks 탭에 작은 보고 한 줄로 표시해 주는 단위가 Check Run 이다. 예를 들면 ‘Bandit 정적 분석: 성공 / 실패 / 주의 + 요약 메시지 + 자세히 보기 링크’ 같은 줄을 PR 페이지에서 바로 볼 수 있게 해 준다. GitHub Actions 워크플로 자체가 자동으로 만들어 주는 Check 와 별개로, 외부 도구가 GitHub REST API 를 호출해서 직접 Check Run 을 만들 수도 있다. 휴면 모듈의 `create_check_run` 메서드는 바로 이 ‘외부에서 Check Run 을 만들어 PR 결과를 GitHub UI 에 노출하는’ 미래 기능을 준비해 둔 자산이다. 지금은 호출하지 않지만, 활성화될 때를 대비해 보존한다."
@@ -1285,7 +1285,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
 
 ## 10. 현재 상태 (Wave 4-Q 시점)
 
-- 로컬 `main` 의 마지막 코드 변경 머지 커밋은 여전히 Wave 4-P 머지 커밋 `d8bf187` (Wave 4-P 구현 커밋 `560a605`) 이다. Wave 4-Q 는 **문서 전용 wave 로 코드/테스트/스키마/설정/lock/리포트/DB 변경이 0건** 이며, 본 wave 의 산출물은 docs-only 구현 커밋 `79b3eb1` 과 이를 로컬 `main` 으로 통합한 머지 커밋 `b50bad8` (브랜치 `w4q-doc-only`, 원격 push 미수행) 이다. 현재 로컬 `main` HEAD 는 `b50bad8` 다.
+- 로컬 `main` 의 마지막 코드 변경 머지 커밋은 여전히 Wave 4-P 머지 커밋 `d8bf187` (Wave 4-P 구현 커밋 `560a605`) 이다. Wave 4-Q 는 **문서 전용 wave 로 코드/테스트/스키마/설정/lock/리포트/DB 변경이 0건** 이며, 본 wave 의 산출물은 docs-only 구현 커밋 `79b3eb1` 과 이를 로컬 `main` 으로 통합한 머지 커밋 `b50bad8` (브랜치 `w4q-doc-only`, 원격 push 미수행) 이다. Wave 4-Q 머지 커밋은 `b50bad8` 이며, 로컬 `main` 에는 그 위에 post-merge 문서 sync 커밋 `a6a7de6 docs(refactoring): sync Wave 4-Q merge status` 가 함께 포함되어 있다 (후속 문서 전용 wording-fix 커밋이 추가되더라도 본 문서의 Wave 4-Q 결정 — Option A / DOC_ONLY, 코드/테스트/스키마 변경 0, 휴면 GitHub client 보존, 활성화 재개 트리거, Check Run 설명 — 은 동일하게 유지된다).
   - Wave 4-Q audit 시작 시 baseline HEAD 는 `c0ea53d docs(refactoring): update Wave 4-P history` 였다. 본 wave 는 그 위에 단일 docs-only 구현 커밋 `79b3eb1` 을 만든 뒤 머지 커밋 `b50bad8` 로 로컬 `main` 에 통합했다. 원격 push 는 수행하지 않았다.
 - 본 head 는 **로컬에만 존재** 하며 원격으로 push 되지 않았고, PR / deploy / production DB / 실 외부 Dallo 호출 / 실 LLM 호출 / 실 GitHub API 호출 / 실 Bandit/Semgrep / 실 flake8 / 실 sandbox pytest / network 호출도 수행되지 않았다.
 - 마지막 검증된 targeted 테스트 결과 (Wave 4-P post-merge main 기준, Wave 4-Q 동안 코드 미변경이므로 유효): `tests/test_db_clock_seam.py tests/test_api_contract.py -q` → **21 passed in 2.89s**.
@@ -1295,7 +1295,7 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - 문서 diff 는 본 `docs/refactoring/clean-architecture-wave-history.md` 단일 파일에 한정 (`git diff -- docs/refactoring/clean-architecture-wave-history.md`, `git status --short` 로 확인).
   - 본 wave 동안 push / PR / deploy / 실 외부 호출 0건.
 - Rollback:
-  - Wave 4-Q (문서 전용, 로컬 main 통합 완료): 본 sync 커밋이 있다면 먼저 `git revert <sync commit>` 으로 되돌린 뒤, `git revert -m 1 b50bad8` (구현 커밋만 되돌릴 경우 `git revert 79b3eb1`) — 본 문서의 Wave 4-Q 기록만 사라지고 다른 저장소 상태는 변하지 않는다 (코드/스키마/계약/보안 정책 영향 0).
+  - Wave 4-Q (문서 전용, 로컬 main 통합 완료): post-merge 문서 sync 커밋 `a6a7de6` 와 그 이후 본 문서에 적용된 wording-fix 커밋(있다면) 을 먼저 `git revert <sync/wording-fix commit>` 순서대로 되돌린 뒤 `git revert -m 1 b50bad8` 로 Wave 4-Q 머지 자체를 되돌린다 (구현 커밋만 되돌릴 경우 `git revert 79b3eb1`) — 본 문서의 Wave 4-Q 기록만 사라지고 다른 저장소 상태는 변하지 않는다 (코드/스키마/계약/보안 정책 영향 0).
   - Wave 4-P (코드 변경): `git revert -m 1 d8bf187` (구현 커밋만 되돌릴 경우 `git revert 560a605`).
 - Rationale / Approval log:
   - Wave 4-Q audit: `/tmp/dallo-wave4q-readonly-audit.out.txt`, A/B 결정 검토: `/tmp/dallo-wave4q-ab-decision.out.txt`, 승인 로그: `/tmp/dallo-approval-log-wave4q.md`.
