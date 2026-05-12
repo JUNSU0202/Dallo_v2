@@ -28,6 +28,7 @@ from typing import Optional
 
 from shared.command_env import build_child_env
 from analyzer.dependency_command_runner import DependencyCommandRunner
+from analyzer.file_io import FileIO, get_default_file_io
 
 logger = logging.getLogger(__name__)
 
@@ -127,8 +128,20 @@ class DependencyScanner:
     수 있다 (Wave 3-F).
     """
 
-    def __init__(self, runner: Optional[DependencyCommandRunner] = None):
+    def __init__(
+        self,
+        runner: Optional[DependencyCommandRunner] = None,
+        *,
+        file_io: Optional[FileIO] = None,
+    ):
         self._runner = runner or DependencyCommandRunner()
+        # Wave 4-Z: requirements/package.json 임시 쓰기 및 fallback 라인 읽기
+        # 경계를 keyword-only seam 으로 분리. ``None`` 이면 사용 시점에 lazy
+        # 로 ``get_default_file_io()`` 를 해석한다 — 운영 동작 무변경.
+        self._file_io = file_io
+
+    def _io(self) -> FileIO:
+        return self._file_io or get_default_file_io()
 
     def scan(self, project_path: str) -> list[DependencyScanResult]:
         """
@@ -178,8 +191,7 @@ class DependencyScanner:
         tmp_dir = tempfile.mkdtemp(prefix="dallo_deps_")
         try:
             req_path = os.path.join(tmp_dir, "requirements.txt")
-            with open(req_path, "w", encoding="utf-8") as f:
-                f.write(requirements_text)
+            self._io().write_text(req_path, requirements_text)
             return self._scan_pip(req_path)
         finally:
             import shutil
@@ -190,8 +202,7 @@ class DependencyScanner:
         tmp_dir = tempfile.mkdtemp(prefix="dallo_deps_")
         try:
             pkg_path = os.path.join(tmp_dir, "package.json")
-            with open(pkg_path, "w", encoding="utf-8") as f:
-                f.write(package_json_text)
+            self._io().write_text(pkg_path, package_json_text)
             # npm install 실행 (외부 명령 호출은 어댑터 경유)
             # Wave 4-H: 부모 env 전체를 자식에게 상속시키지 않고
             # ``build_child_env`` 의 보수적 allowlist + 시크릿 이름 deny
@@ -303,8 +314,7 @@ class DependencyScanner:
     def _fallback_pip_scan(self, requirements_path: str, result: DependencyScanResult) -> DependencyScanResult:
         """pip-audit 미설치 시 requirements.txt 파싱으로 기본 정보 제공"""
         try:
-            with open(requirements_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
+            lines = self._io().read_text_lines(requirements_path)
 
             for line in lines:
                 line = line.strip()
