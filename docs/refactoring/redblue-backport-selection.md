@@ -289,3 +289,18 @@
 - **본 wave (5-A)**: 문서만. 운영 코드/테스트/스키마/패키지/설정 어떤 것도 변경 없음. 머지/푸시/PR/배포/실 외부 호출 어떤 것도 수행 없음.
 
 — Wave 5-A 종료.
+
+---
+
+## 부록 A. 후속 wave 진행 상태 (post-merge sync)
+
+본 절은 5-A 본문을 다시 쓰지 않고, 본 계획이 실제로 어디까지 진행되었는지만 간단히 기록한다. 본문의 결정 (§4 직접 머지 금지, §6 gateway/claude-sonnet-4-6 디폴트 Reject, §6-2 / §10 `shared/schemas.py` 무변경 정책) 은 모두 그대로 유효하다.
+
+- **Wave 5-B** — `shared/red_blue.py` 순수 도메인 헬퍼: **완료 (로컬 main 통합)**.
+  - 브랜치: `w5b-redblue-domain`. 구현 커밋 `6f8af7e feat(shared): add red blue domain helpers`. 로컬 main 머지 커밋 `761f974 merge: integrate Wave 5-B Red Blue domain helpers`.
+  - 범위 (first-parent diff): `shared/red_blue.py` 신규 1건 + `tests/test_shared_red_blue.py` 신규 1건. `shared/schemas.py` 무변경 (§6-2 / §10 정책 보존). API/라우터/DB/대시보드/리포트/프로바이더/디폴트 모델 통합 0건 (5-C ~ 5-J 로 deferral).
+  - 검증: targeted `pytest tests/test_shared_red_blue.py -q` → 54 passed, full `pytest tests/ -q` → 905 passed (Wave 4-Z baseline 851 → +54). 독립 read-only 리뷰 결과 APPROVED.
+  - 정책 보존: Gemini / Google AI Studio 기본 경로 유지, gateway / claude-sonnet-4-6 디폴트 미도입.
+  - Rollback: `git revert -m 1 761f974` (구현 커밋만 revert 시 `git revert 6f8af7e`). 운영 caller 0 이므로 revert 의 운영 영향 0.
+  - 자세한 wave 상세는 `docs/refactoring/clean-architecture-wave-history.md` §10 (현재 상태, Wave 5-B 시점) 및 §5 의 5-B 행 참조.
+- **Wave 5-C ~ Wave 5-J** — 아직 시작되지 않음. 각 wave 의 진입 조건은 본 문서 §8 / §9 / §10 의 승인 게이트 그대로다.
