@@ -37,6 +37,8 @@ class StatsResponse(_Permissive):
     duration_seconds: Optional[float] = None
     session_id: Optional[str] = None
     total_sessions: Optional[int] = None
+    # Wave 5-D: 추가만 허용되는 Red/Blue 요약 (handler 가 set 하지 않으면 응답에 등장하지 않음).
+    red_blue_summary: Optional[dict] = None
 
 
 # ============================================================
@@ -57,6 +59,14 @@ class VulnerabilityItem(_Permissive):
     cwe_id: Optional[str] = None
     more_info: Optional[str] = None
     function_code: Optional[str] = None
+    # Wave 5-D: Red Team enrichment (additive only — handler 가 set 한 경우만 응답에 노출).
+    red_team_phase: Optional[str] = None
+    attack_vector: Optional[str] = None
+    attack_scenario: Optional[str] = None
+    security_impact: Optional[str] = None
+    blue_team_strategy: Optional[str] = None
+    exploitability: Optional[str] = None
+    attack_plan: Optional[dict] = None
 
 
 class VulnerabilitiesResponse(_Permissive):
@@ -114,6 +124,12 @@ class PatchItem(_Permissive):
     syntax_valid: Optional[bool] = None
     test_passed: Optional[bool] = None
     created_at: Optional[str] = None
+    # Wave 5-D: Blue Team enrichment (additive only — handler 가 set 한 경우만 응답에 노출).
+    blue_team_phase: Optional[str] = None
+    defense_strategy: Optional[str] = None
+    defense_outcome: Optional[str] = None
+    residual_risk: Optional[str] = None
+    defense_plan: Optional[dict] = None
 
 
 class PatchesResponse(_Permissive):

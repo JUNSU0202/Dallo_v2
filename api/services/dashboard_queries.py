@@ -19,11 +19,17 @@ from __future__ import annotations
 from typing import Optional
 
 from api import result_sources
+from api.services import red_blue_view
 from db import service as db_service
 
 
 def get_stats() -> dict:
-    """대시보드 메인 통계 — DB 우선, 없으면 full_result.json, 없으면 Bandit 폴백."""
+    """대시보드 메인 통계 — DB 우선, 없으면 full_result.json, 없으면 Bandit 폴백.
+
+    Wave 5-D: JSON 폴백 경로에서 ``full_result`` 에 raw vulnerabilities/patches
+    가 존재할 때만 ``red_blue_summary`` 를 추가한다. DB 집계 경로 / 빈 폴백 /
+    raw 리스트 없는 경로는 기존 키 셋을 그대로 유지한다.
+    """
     stats = db_service.get_stats()
     if stats.get("total_issues", 0) > 0:
         return stats
@@ -31,7 +37,7 @@ def get_stats() -> dict:
     full = result_sources.load_full_result()
     if full:
         summary = full.get("summary", {})
-        return {
+        base = {
             "total_issues": summary.get("total", 0),
             "high": summary.get("high", 0),
             "medium": summary.get("medium", 0),
@@ -41,6 +47,11 @@ def get_stats() -> dict:
             "duration_seconds": full.get("duration_seconds"),
             "session_id": full.get("session_id", ""),
         }
+        return red_blue_view.enrich_stats(
+            base,
+            full.get("vulnerabilities"),
+            full.get("patches"),
+        )
 
     report = result_sources.load_bandit_report()
     totals = report.get("metrics", {}).get("_totals", {})
@@ -97,7 +108,8 @@ def get_vulnerabilities(
     if file_path:
         vulns = [v for v in vulns if file_path in v.get("file_path", "")]
 
-    return {"count": len(vulns), "vulnerabilities": vulns}
+    enriched = red_blue_view.enrich_vulnerabilities(vulns)
+    return {"count": len(enriched), "vulnerabilities": enriched}
 
 
 def get_vulnerabilities_by_file() -> dict:
@@ -137,15 +149,22 @@ def get_vulnerabilities_by_type() -> dict:
 
 
 def get_patches() -> dict:
-    """LLM 수정 제안 목록 — 취약점 메타로 enrichment."""
+    """LLM 수정 제안 목록 — 취약점 메타로 enrichment.
+
+    Wave 5-D: 기존 meta enrichment(``file_path`` / ``line_number`` / ``rule_id``
+    / ``severity`` / ``title`` / ``original_code``) 위에 Blue Team enrichment
+    키(``blue_team_phase`` / ``defense_strategy`` / ``defense_outcome`` /
+    ``residual_risk`` / ``defense_plan``) 를 추가한다.
+    """
     full = result_sources.load_full_result()
     patches = full.get("patches", [])
+    raw_vulns = full.get("vulnerabilities", [])
 
-    vulns = {v.get("id"): v for v in full.get("vulnerabilities", [])}
-    enriched = []
+    vulns_by_id = {v.get("id"): v for v in raw_vulns}
+    meta_enriched: list[dict] = []
     for p in patches:
-        vuln = vulns.get(p.get("vulnerability_id"), {})
-        enriched.append({
+        vuln = vulns_by_id.get(p.get("vulnerability_id"), {})
+        meta_enriched.append({
             **p,
             "file_path": vuln.get("file_path", ""),
             "line_number": vuln.get("line_number", 0),
@@ -155,6 +174,7 @@ def get_patches() -> dict:
             "original_code": vuln.get("function_code") or vuln.get("code_snippet", ""),
         })
 
+    enriched = red_blue_view.enrich_patches(meta_enriched, raw_vulns)
     return {"count": len(enriched), "patches": enriched}
 
 
@@ -165,11 +185,15 @@ def get_sessions() -> dict:
 
 
 def get_session_detail(session_id: str) -> dict:
-    """특정 세션 상세 — 미존재 시 ``{"error": "Session not found"}``."""
+    """특정 세션 상세 — 미존재 시 ``{"error": "Session not found"}``.
+
+    Wave 5-D: 세션 상세 dict 에 vulnerabilities/patches 가 있으면 Red/Blue
+    enrichment 와 ``red_blue_summary`` 를 추가한다. 미존재 시 에러 셰이프는 그대로.
+    """
     result = db_service.get_analysis_by_session(session_id)
     if not result:
         return {"error": "Session not found"}
-    return result
+    return red_blue_view.enrich_analysis_result(result)
 
 
 __all__ = [
