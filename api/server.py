@@ -40,6 +40,7 @@ from api.routers.dashboard import router as dashboard_router
 from api.routers.dependencies import router as dependencies_router
 from api.routers.patch import router as patch_router
 from api.routers.quick_scan import router as quick_scan_router
+from api.routers.red_blue import router as red_blue_router
 from api.routers.report import router as report_router
 from api.settings import CORS_ORIGINS, DASHBOARD_DIR, UPLOAD_DIR
 from db.models import init_db
@@ -99,6 +100,8 @@ app.include_router(patch_router)
 # 분석/잡 (POST /api/analyze, GET /api/analyze/status/{task_id},
 #         GET /api/analyze/{job_id}, POST /api/analyze/file) — Wave 2-G 분리
 app.include_router(analyze_router)
+# Red/Blue 종합 요약 (GET /api/red-blue/summary) — Wave 5-C 분리
+app.include_router(red_blue_router)
 
 
 @app.get("/")
