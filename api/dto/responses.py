@@ -155,3 +155,20 @@ class AnalyzeStartResponse(_Permissive):
     status: str
     message: str
     backend: str
+
+
+# ============================================================
+# /api/red-blue/summary
+# ============================================================
+
+class RedBlueSummaryResponse(_Permissive):
+    """Red/Blue 종합 요약 응답.
+
+    중첩 객체는 ``shared.red_blue.build_red_blue_summary`` 가 만든 dict 를
+    그대로 통과시킨다 (permissive). top-level 키 셰이프만 동결한다.
+    """
+
+    red_team: Optional[dict] = None
+    blue_team: Optional[dict] = None
+    comparison: Optional[dict] = None
+    attack_paths: Optional[list] = None
