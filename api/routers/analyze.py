@@ -62,9 +62,10 @@ Wave 3-D — analysis_jobs 메모리 폴백 정리:
 from __future__ import annotations
 
 from threading import Thread
+from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from api.auth import verify_api_key
 from api.dto.responses import AnalyzeStartResponse
@@ -112,6 +113,23 @@ def _ensure_celery_initialized() -> bool:
     return _USE_CELERY
 
 
+class LLMOptimizationRequest(BaseModel):
+    """Wave 5-F — optional LLM 입력 최적화 정책.
+
+    필드 셰이프는 ``shared.llm_optimization.LLMOptimizationConfig`` 와 1:1 대응한다.
+    빈 객체 ``{}`` 는 명시적인 opt-in 으로 간주되어 모든 default 값으로 채워진다.
+    """
+
+    enabled: bool = True
+    cve_scope: list[str] = Field(default_factory=list)
+    cwe_scope: list[str] = Field(default_factory=list)
+    rule_scope: list[str] = Field(default_factory=list)
+    max_targets: int = 10
+    max_context_chars: int = 2400
+    batch_enabled: bool = True
+    batch_size: int = 5
+
+
 class AnalyzeRequest(BaseModel):
     code: str
     filename: str = "uploaded_code.py"
@@ -119,6 +137,9 @@ class AnalyzeRequest(BaseModel):
     multi_patch: bool = False
     provider: str = "gemini"
     model: str = "gemini-2.0-flash-lite"
+    # Wave 5-F: optional LLM 입력 최적화. ``None`` 이면 pre-Wave-5-F 동작 보존
+    # (필터/cap 미적용). 명시적으로 ``{}`` 가 들어오면 default config 가 적용된다.
+    llm_optimization: Optional[LLMOptimizationRequest] = None
 
 
 def _run_analysis(
@@ -129,18 +150,23 @@ def _run_analysis(
     provider: str,
     model: str,
     multi_patch: bool = False,
+    llm_optimization=None,
 ):
     """백그라운드 분석 실행 — 서비스 ``execute_analysis_job`` 으로 위임한다.
 
     라우터의 모듈 글로벌 ``analysis_jobs`` 를 그대로 서비스에 넘기므로,
     테스트가 ``analyze_router.analysis_jobs`` 를 monkeypatch 한 dict 가
     그대로 반영된다.
+
+    Wave 5-F: ``llm_optimization`` 은 ``LLMOptimizationRequest`` 인스턴스 또는
+    None 이며, 서비스 → 파이프라인까지 그대로 전파된다.
     """
     _pipeline_service.execute_analysis_job(
         jobs=analysis_jobs,
         job_id=job_id, code=code, filename=filename,
         use_llm=use_llm, provider=provider, model=model,
         multi_patch=multi_patch,
+        llm_optimization=llm_optimization,
     )
 
 
@@ -151,13 +177,26 @@ def _run_analysis(
     dependencies=[Depends(verify_api_key)],
 )
 def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
-    """코드를 제출하여 분석을 시작합니다. Celery 사용 가능 시 task로 제출."""
+    """코드를 제출하여 분석을 시작합니다. Celery 사용 가능 시 task로 제출.
+
+    Wave 5-F: ``req.llm_optimization`` 가 지정되면 Celery delay / 메모리
+    백그라운드 태스크 양쪽으로 그대로 전달된다. Celery 경로는 JSON 직렬화
+    호환을 위해 ``model_dump()`` 로 dict 화 해 보낸다. 미지정 시 None 으로
+    전달돼 pre-Wave-5-F 동작을 보존한다.
+    """
+    optimization_payload = (
+        req.llm_optimization.model_dump()
+        if req.llm_optimization is not None
+        else None
+    )
+
     if _ensure_celery_initialized():
         # Celery task로 제출
         task = run_analysis_task.delay(
             code=req.code, filename=req.filename,
             use_llm=req.use_llm, provider=req.provider,
             model=req.model, multi_patch=req.multi_patch,
+            llm_optimization=optimization_payload,
         )
         return {
             "job_id": task.id,
@@ -180,6 +219,7 @@ def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(
         _run_analysis, job_id, req.code, req.filename,
         req.use_llm, req.provider, req.model, req.multi_patch,
+        req.llm_optimization,
     )
 
     return {

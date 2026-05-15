@@ -94,6 +94,7 @@ def execute_analysis_job(
     provider: str,
     model: str,
     multi_patch: bool = False,
+    llm_optimization=None,
 ) -> None:
     """분석 파이프라인을 실행하고 ``jobs[job_id]`` 상태를 갱신한다.
 
@@ -120,6 +121,7 @@ def execute_analysis_job(
             job_id=job_id, code=code, filename=filename,
             use_llm=use_llm, provider=provider, model=model,
             multi_patch=multi_patch, on_progress=on_progress,
+            llm_optimization=llm_optimization,
         )
 
         jobs[job_id]["language"] = result.language

@@ -43,6 +43,7 @@ def execute_pipeline(
     *,
     clock: Optional[Callable[[], float]] = None,
     file_io=None,
+    llm_optimization=None,
 ) -> PipelineResult:
     """
     분석 파이프라인을 실행합니다.
@@ -63,6 +64,13 @@ def execute_pipeline(
             ``None`` 이면 ``analyzer.file_io.get_default_file_io()`` 가 lazy
             로 사용된다 — 운영 동작 무변경. 더블 주입 시 ``write_text(path,
             content)`` 만 호출되며 실제 디스크 쓰기는 어댑터에 위임된다.
+        llm_optimization: LLM 입력 최적화 정책 (Wave 5-F).
+            ``None`` 이면 dedup 결과 ``llm_targets`` 가 그대로
+            ``_generate_patches`` 에 전달되어 pre-Wave-5-F 동작이 보존된다.
+            지정 시 ``shared.llm_optimization.optimize_llm_targets`` 로
+            정렬/필터/cap 이 적용되고, ``LLMOptimizationConfig`` /
+            JSON 호환 dict / pydantic 모델을 모두 받는다.
+            지정된 경우에만 결과 dict 에 ``llm_optimization`` summary 가 추가된다.
 
     Returns:
         PipelineResult
@@ -112,11 +120,26 @@ def execute_pipeline(
         _progress("위험도 산정 중...")
         _score_risk(vuln_reports)
 
+        # Step 4.5 (Wave 5-F): LLM 입력 최적화 — config 가 있을 때만 적용.
+        # config 가 None 이면 ``llm_targets`` 가 그대로 _generate_patches 로 전달돼
+        # pre-Wave-5-F 동작이 보존된다. config 가 있으면 risk_level / severity /
+        # cvss_score 가 이미 채워진 상태에서 최적화가 일어난다.
+        optimized_targets = llm_targets
+        optimization_summary = None
+        if llm_optimization is not None:
+            optimized_targets, optimization_summary = _apply_llm_optimization(
+                llm_targets, llm_optimization,
+            )
+
         # Step 5: LLM 수정안 생성
         patches = []
-        if use_llm and llm_targets:
-            _progress(f"AI 수정안 생성 중... ({len(llm_targets)}/{len(vuln_reports)}건)")
-            patches, llm_error = _generate_patches(llm_targets, provider, model, multi_patch)
+        if use_llm and optimized_targets:
+            _progress(
+                f"AI 수정안 생성 중... ({len(optimized_targets)}/{len(vuln_reports)}건)"
+            )
+            patches, llm_error = _generate_patches(
+                optimized_targets, provider, model, multi_patch,
+            )
             pipeline_result.llm_error = llm_error
 
         # Step 6: 코드 검증
@@ -133,6 +156,11 @@ def execute_pipeline(
         _progress("결과 저장 중...")
         elapsed = time_provider() - start_time
         result_data = _build_result(job_id, vuln_reports, patches, elapsed)
+
+        # Wave 5-F: optimization 이 명시적으로 supplied 된 경우에만 summary 를
+        # 결과 dict 에 additive 로 추가한다. pre-Wave-5-F 응답 셰이프 보존.
+        if optimization_summary is not None:
+            result_data["llm_optimization"] = optimization_summary
 
         # DB 저장
         db_error = _persist_to_db(result_data)
@@ -222,6 +250,39 @@ def _score_risk(vuln_reports: list):
     """전체 취약점에 위험도를 산정합니다."""
     from analyzer.risk_scorer import score_vulnerabilities
     score_vulnerabilities(vuln_reports)
+
+
+_LLM_OPTIMIZATION_FIELDS: tuple[str, ...] = (
+    "enabled", "cve_scope", "cwe_scope", "rule_scope",
+    "max_targets", "max_context_chars", "batch_enabled", "batch_size",
+)
+
+
+def _apply_llm_optimization(llm_targets: list, opt) -> tuple[list, dict]:
+    """Wave 5-F — ``llm_targets`` 에 LLM 입력 최적화를 적용한다.
+
+    ``opt`` 는 ``LLMOptimizationConfig`` / dict / pydantic 모델 (``model_dump`` 또는
+    ``dict``) 모두 받는다. 알 수 없는 키는 무시되어 ``LLMOptimizationConfig`` 의
+    알려진 필드만 반영된다 — 외부 호출자가 미래 필드를 잘못 보내도 파이프라인을
+    깨뜨리지 않는다.
+    """
+    from shared.llm_optimization import LLMOptimizationConfig, optimize_llm_targets
+
+    if isinstance(opt, LLMOptimizationConfig):
+        config = opt
+    else:
+        if hasattr(opt, "model_dump") and callable(opt.model_dump):
+            raw = opt.model_dump()
+        elif hasattr(opt, "dict") and callable(opt.dict):
+            raw = opt.dict()
+        elif isinstance(opt, dict):
+            raw = opt
+        else:
+            raw = {}
+        safe = {k: v for k, v in raw.items() if k in _LLM_OPTIMIZATION_FIELDS}
+        config = LLMOptimizationConfig(**safe)
+
+    return optimize_llm_targets(llm_targets, config)
 
 
 def _generate_patches(
