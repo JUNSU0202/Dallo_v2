@@ -464,12 +464,14 @@ class TestRouterDelegatesToService:
         captured: list[dict] = []
 
         def _fake_execute(*, jobs, job_id, code, filename, use_llm,
-                          provider, model, multi_patch=False):
+                          provider, model, multi_patch=False,
+                          llm_optimization=None):
             captured.append({
                 "jobs_is": jobs, "job_id": job_id, "code": code,
                 "filename": filename, "use_llm": use_llm,
                 "provider": provider, "model": model,
                 "multi_patch": multi_patch,
+                "llm_optimization": llm_optimization,
             })
 
         monkeypatch.setattr(svc, "execute_analysis_job", _fake_execute)
