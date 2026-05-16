@@ -1758,6 +1758,47 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - 승인 로그: `/tmp/dallo-approval-log-wave5g.md`.
 - Rollback (Wave 5-G): 본 wave 의 구현은 단일 로컬 커밋이며, 표준 revert 경로는 해당 커밋의 `git revert <wave5g_commit>` (혹은 머지 후 형태라면 `git revert -m 1 <merge_commit>`) 이다. revert 시 `api/routers/analyze.py` 의 두 dispatch 호출은 다시 positional 형태로 돌아가고, `tests/test_wave5g_llm_optimization_contract_hardening.py` 와 `tests/test_api_analyze_router.py` 의 fake Thread 어설션 갱신이 함께 사라진다. 카운트는 Wave 5-F post-state (`pytest tests/ -q` → 1029 passed) 로 돌아간다. 본 wave 의 변경은 응답 셰이프 / HTTP 계약 0 변경이므로 revert 의 운영 영향은 0 이다. Wave 2-A ~ Wave 5-F 의 모든 자산은 본 revert 와 무관하게 그대로 유지된다.
 
+## 10.quater 현재 상태 (Wave 5-H1 시점)
+
+- Wave 5-H1 은 **Semgrep multi-config argv seam 마이크로 wave** 다. `analyzer/semgrep_runner.py` 의 `SemgrepRunner.__init__` 이 받는 `config` 파라미터를 단일 문자열뿐 아니라 다중 config 시퀀스(`list[str]` / `tuple[str, ...]`) 로도 받아 argv 에 순서를 보존한 채 반복되는 `--config <value>` 쌍을 emit 하도록 만들었다. 응답 셰이프 / HTTP 계약 / 외부 동작 / DB / API / agent / validator / shared.schemas / quick_scan / heuristic / LLM provider / YAML 룰 파일 0 변경.
+- 옛 위험: `SemgrepRunner` 가 한 슬롯의 `--config` 만 사용했기 때문에 여러 Semgrep 룰셋 (예: `p/security-audit` + `p/owasp-top-ten` + Java SSRF 커스텀 룰셋) 을 한 번의 실행에서 동시에 적용할 수 없었고, 후속 Wave 5-H 의 번들 (heuristic fallback + 다중 룰셋) 이 본 슬롯을 안전하게 슬라이스하려면 먼저 다중 config 시퀀스 입력 자체가 fakeable argv seam 으로 정리되어 있어야 했다. 단순히 호출부에서 문자열을 합치는 방식은 (a) Semgrep CLI 가 단일 `--config` 값으로 여러 룰셋을 받지 않으며, (b) shell 이스케이프 / 공백 분리 의미가 모호해지므로 보안상 채택할 수 없었다.
+- 본 wave 의 worktree diff 는 두 파일 + 문서 한 건으로 한정된다:
+  - `analyzer/semgrep_runner.py` — `config` 파라미터 타입을 `Union[str, Sequence[str]]` (모듈 레벨 별칭 `SemgrepConfig`) 로 확장. 새 모듈 함수 `_normalize_config` 가 입력을 `tuple[str, ...]` 로 정규화하면서 (1) `str` 은 단일 config 로 취급 (문자 시퀀스로 분해 금지), (2) 빈 시퀀스는 `ValueError` 로 거부 (룰셋 0개 silent disable 차단), (3) 비-문자열 entry 는 `TypeError` 로 거부, (4) list / tuple 외 타입은 `TypeError` 로 거부. `self._configs` 에는 항상 정규화된 tuple 을 저장하고, `self.config` 는 호출자/기존 테스트 호환을 위해 단일 문자열 입력 시 `str`, 다중 입력 시 `tuple[str, ...]` 형태로 노출한다. `run()` 의 argv 빌더는 `for cfg in self._configs: cmd.extend(["--config", cfg])` 루프로 교체해 `--config p/security-audit --config p/owasp-top-ten` 처럼 순서를 보존한 채 반복 emit 한다.
+  - `tests/test_semgrep_multi_config_argv.py` 신규 11 회귀:
+    - `TestSemgrepSingleConfigArgvPreserved` — 단일 `config="auto"` 가 정확히 한 쌍의 `--config auto` 만 emit / `--json --quiet <target>` 슬롯 보존 / 타임아웃 120 보존 / 기본 생성자가 여전히 `auto` 사용 (2 회귀).
+    - `TestSemgrepMultiConfigArgv` — tuple 입력 순서 보존 (1 회귀) / list 입력 순서 보존 (1 회귀) / 다중 config 에서도 fake JSON 결과 파싱이 동일하게 동작 (1 회귀).
+    - `TestSemgrepConfigValidation` — 빈 tuple 거부 / 빈 list 거부 / 비-문자열 entry 거부 / `None` entry 거부 / `str` 이 char 시퀀스로 분해되지 않음 (5 회귀).
+    - `TestSemgrepEnvSanitizerStillBlocksSecrets` — 부모 프로세스에 `SEMGREP_APP_TOKEN` / `ANTHROPIC_API_KEY` / `GITHUB_TOKEN` 이 있어도 자식 env 로 키 이름도 값도 누출되지 않음 (1 회귀).
+  - `docs/refactoring/clean-architecture-wave-history.md` — 본 항목.
+- 본 wave 가 의식적으로 **하지 않은 것**:
+  - `shared/schemas.py` 변경 0건 (계약 보존).
+  - `analyzer/quick_scan.py` / `analyzer/heuristic_runner.py` / `analyzer/pipeline.py` / `analyzer/bandit_runner.py` / `analyzer/static_tool_command_runner.py` 변경 0건 — 본 wave 는 *Semgrep runner 의 argv seam* 만 손댄다.
+  - `shared/command_env.py` / `_SEMGREP_ENV_ALLOWLIST` 변경 0건 — child env sanitizer 정책 보존. 본 wave 의 회귀 테스트 (`TestSemgrepEnvSanitizerStillBlocksSecrets`) 가 정책이 그대로 작동하는지 가드한다.
+  - `config/semgrep/*.yml` 또는 신규 YAML 룰 파일 0건 — Java SSRF 커스텀 룰셋 도입은 후속 wave (Wave 5-H 본편) 의 범위.
+  - `api/routers/*` / `api/services/*` / `api/dto/*` / `api/server.py` / `agent/*` / `validator/*` / `db/*` / `dashboard/*` / `reports/*` 변경 0건. 라우터 / 서비스 / 분석 파이프라인 / DTO / 응답 셰이프 / HTTP 계약 한 글자도 바뀌지 않았다.
+  - `detect_and_run()` 의 `SemgrepRunner(config="auto")` 호출 그대로 — Python 파일은 Bandit + Semgrep(auto) merge, 기타 언어는 Semgrep(auto) 단독. multi-config 활용은 호출자가 명시적으로 시퀀스를 넘길 때만 트리거된다.
+  - 신규 LLM provider / 디폴트 모델 / policy 토큰 도입 0건 — Wave 5-A §6 의 **Reject** 결정 (`gateway` / `claude-sonnet-4-6` / `LLM_PRIMARY_PROVIDER`) 보존. Gemini / Google AI Studio 디폴트 보존. `git diff main...HEAD` 의 추가 라인에 해당 토큰 0건.
+  - 실 외부 호출 0건 — push / PR / deploy / production DB / 실 Semgrep subprocess / 실 LLM / 실 Celery / 실 Redis / 실 GitHub API / 실 network 호출 모두 수행되지 않았다. 모든 테스트는 `_FakeCommandRunner` 또는 pytest `monkeypatch` 만 사용한다.
+- 보존된 동작 (회귀 가드 포함):
+  - 단일 `config="auto"` (또는 단일 `"p/security-audit"`) 는 정확히 한 쌍의 `--config <value>` 만 emit. argv 슬롯 (`semgrep` / `--config <cfg>` / `--json` / `--quiet` / `<target>`) 의 상대 순서 그대로.
+  - `detect_and_run()` 가 사용하는 `SemgrepRunner(config="auto")` 경로 그대로.
+  - 기본 생성자 `SemgrepRunner()` / `SemgrepRunner(config="auto")` 호환 유지.
+  - 타임아웃 120초 보존, `shell=True` 미사용, list-argv 만 사용.
+  - 결과 JSON 파싱 / severity → HIGH/MEDIUM/LOW 매핑 / CWE 추출 / snippet enrichment / 한국어 에러 메시지 / `file_io.write_json` 위임 / `file_io.read_text_lines` 위임 / 0건 결과 시 write 미발생 모두 보존.
+  - `build_child_env(allowlist=_SEMGREP_ENV_ALLOWLIST)` 호출 그대로 — `SEMGREP_APP_TOKEN` / `ANTHROPIC_API_KEY` / `GITHUB_TOKEN` 등 시크릿은 차단된다.
+  - Wave 4-N 의 `file_io` keyword-only seam / Wave 3-G 의 `runner` 주입 seam / Wave 4-G 의 child env sanitizer 정책 모두 그대로.
+- 마지막 검증된 결과 (Wave 5-H1 시점, worktree `w5h1-semgrep-multi-config` 기준):
+  - RED (구현 전):
+    - 명령: `DALLO_ENCRYPTION_KEY=test-key DALLO_API_KEYS=test-api-key /home/ubuntu/dallo-devsecops/venv/bin/python -m pytest tests/test_semgrep_multi_config_argv.py -q`.
+    - 결과: **6 failed, 5 passed**. 실패 회귀: tuple/list 입력이 한 슬롯의 `--config (tuple_str)` 로 합쳐져 `--config` 쌍이 1개만 emit (2건), 빈 시퀀스 / 비-문자열 entry / `None` entry 입력에 대해 어떠한 예외도 raise 되지 않음 (4건).
+  - GREEN (구현 후):
+    - Targeted Wave 5-H1 셋트: `pytest tests/test_semgrep_multi_config_argv.py -q` → **11 passed**.
+    - Adjacent (Semgrep file I/O seam + SecurityChecker): `pytest tests/test_semgrep_file_io_seam.py tests/test_security_checker.py -q` → **34 passed**.
+    - Full: `pytest tests/ -q` → **1048 passed in 38.67s** (Wave 5-G baseline 1037 → +11 신규 회귀).
+  - 보안 스캔 (`git diff main...HEAD`): 추가 라인의 secret-like 리터럴 / `os.system(` / `shell=True` / `eval(` / `exec(` / `pickle.loads?(` 0건. `gateway` / `claude-sonnet` / `LLM_PRIMARY_PROVIDER` 토큰 추가 0건. `shared/schemas.py` diff → **0 bytes**. `analyzer/quick_scan.py` / `analyzer/heuristic_runner.py` / `shared/command_env.py` diff → **0 bytes**.
+- 클린 아키텍처 적합성: 본 wave 는 Dallo_v2 의 **외부 도구 어댑터 (subprocess seam) → 정적 분석 runner → 분석 파이프라인** 분해를 그대로 유지하며, 의존 방향을 한 줄도 뒤집지 않는다. `SemgrepRunner` 의 책임은 여전히 "argv 구성 + 출력 파싱 + 한국어 에러 분기" 에 한정되고, subprocess 호출은 Wave 3-G 의 `StaticToolCommandRunner` 어댑터에 위임된다. 다중 config 정규화 / 검증은 모듈 레벨 헬퍼 `_normalize_config` 로 격리되어 향후 입력 정책 (예: 룰셋 ID 화이트리스트) 확장 지점이 명확하다.
+- Rollback (Wave 5-H1): 본 wave 의 구현은 단일 로컬 커밋이며, 표준 revert 경로는 머지 전이라면 해당 커밋의 `git revert <wave5h1_commit>`, 머지 후라면 `git revert -m 1 <merge_commit>` 이다. revert 시 `analyzer/semgrep_runner.py` 의 `SemgrepConfig` 별칭 / `_normalize_config` 헬퍼 / 다중 config argv 루프, `tests/test_semgrep_multi_config_argv.py` 가 함께 사라진다. 카운트는 Wave 5-G post-state (`pytest tests/ -q` → 1037 passed) 로 돌아간다. 본 wave 의 변경은 단일 문자열 호출 경로에 대해 동작 100% 보존이며, `detect_and_run()` 외 운영 caller 중 누구도 아직 다중 config 시퀀스를 넘기지 않으므로 revert 의 운영 영향은 0 이다. Wave 2-A ~ Wave 5-G 의 모든 자산은 본 revert 와 무관하게 그대로 유지된다.
+
 ## 10.bis 이전 상태 (Wave 5-D 시점, 참고)
 
 - Wave 5-D 는 **대시보드 쿼리 응답 additive Red/Blue enrichment 마이크로 wave** 다 (구현 커밋 `5926fb3 feat(api): add dashboard red blue enrichment`, 로컬 main 머지 커밋 `30ea1df merge: integrate Wave 5-D dashboard Red Blue enrichment`). Wave 5-A 가 `docs/refactoring/redblue-backport-selection.md` §5 #3 / §7-3 / §8 의 5-D 행 / §10 에서 합의한 **backport-by-rewrite** 정책의 네 번째 슬라이스이며, Wave 5-B 가 도입한 `shared.red_blue.enrich_vulnerability` / `enrich_patch` / `build_red_blue_summary` 순수 헬퍼를 Dallo_v2 클린 아키텍처 (router → service → shared helper) 위에서 기존 대시보드 read 엔드포인트 (`/api/vulnerabilities`, `/api/patches`, `/api/stats`, `/api/sessions/{session_id}`, `/api/vulnerabilities/by-file`, `/api/vulnerabilities/by-type`) 응답에 *additive only* 로 부착했다. 원격 `gusle01/main` 의 `api/server.py:414-470` 모놀리식 `_with_red_blue` 헬퍼를 직접 머지/체리픽하지 않고, **Dallo_v2 의 `api/services/dashboard_queries.py` 끝단 + 신규 `api/services/red_blue_view.py` + DTO Optional 필드 추가 위에서 처음부터 새로 작성** 했다. 본 wave 의 머지 first-parent diff 는 `api/dto/responses.py` 수정 1건 + `api/services/dashboard_queries.py` 수정 1건 + `api/services/red_blue_view.py` 신규 1건 + `tests/test_api_dashboard_red_blue_passthrough.py` 신규 1건의 4 파일로 한정된다. `shared/schemas.py` 무변경 (계약 보존), `shared/red_blue.py` / `shared/llm_optimization.py` 무변경, `api/routers/dashboard.py` 무변경 (얇은 라우터 유지), `api/routers/red_blue.py` / `api/services/red_blue_summary.py` (Wave 5-C 자산) 무변경, `agent/` / `analyzer/` / `validator/` / `db/` / `dashboard/` (프론트엔드) / `reports/` / `scripts/` / `.github/` / `config/` / dependency / lock / migration 모두 무변경.
