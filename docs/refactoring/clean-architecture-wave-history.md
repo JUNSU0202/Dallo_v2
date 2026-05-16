@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 5-F 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 5-G 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -1714,8 +1714,8 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - **Dallo_v2 의 리팩토링된 아키텍처가 Gusle01 비교 시 진실의 원천이다.** Gusle01 의 *유용한 동작* 은 Dallo_v2 의 품질을 개선하거나 보존하는 경우에만 **기능 평행(feature parity)** 을 목표로 다시 구현한다.
   - 옛 모놀리스 코드를 **직접 머지/체리픽하지 않는다** — 본 wave 도 backport-by-rewrite 만 사용했다.
 - 독립 read-only 리뷰의 non-blocking 후속 관찰 (모두 blocker 아님, 차후 마이크로 wave 후보로만 기록):
-  - `api/routers/analyze.py` 메모리 백그라운드 경로의 `_run_analysis` 호출이 현재 `req.llm_optimization` 을 **positional** 로 전달한다 — 시그니처가 일치하므로 현재는 문제 없지만, 미래의 안전성을 위해 keyword 호출 (`llm_optimization=req.llm_optimization`) 로 정리하는 마이크로 리팩터가 가능하다.
-  - `analyzer/pipeline.py::_apply_llm_optimization` 의 `_LLM_OPTIMIZATION_FIELDS` 화이트리스트는 `LLMOptimizationConfig` 의 8개 필드와 동일하다. `shared/llm_optimization.py` 가 새 필드를 도입하면 본 화이트리스트와 drift 가 발생할 수 있으므로, drift 가드 회귀 테스트 (예: `set(_LLM_OPTIMIZATION_FIELDS) == set(LLMOptimizationConfig 의 dataclass field names)`) 를 후속 wave 에서 추가하는 것이 안전하다.
+  - ~~`api/routers/analyze.py` 메모리 백그라운드 경로의 `_run_analysis` 호출이 현재 `req.llm_optimization` 을 **positional** 로 전달한다 — 시그니처가 일치하므로 현재는 문제 없지만, 미래의 안전성을 위해 keyword 호출 (`llm_optimization=req.llm_optimization`) 로 정리하는 마이크로 리팩터가 가능하다.~~ → **Wave 5-G 가 메모리 백그라운드 경로 (`background_tasks.add_task`) 와 파일 업로드 경로 (`Thread(target=_run_analysis, kwargs={...})`) 두 dispatch 를 모두 keyword 로 전환하여 본 관찰을 해소했다.**
+  - ~~`analyzer/pipeline.py::_apply_llm_optimization` 의 `_LLM_OPTIMIZATION_FIELDS` 화이트리스트는 `LLMOptimizationConfig` 의 8개 필드와 동일하다. `shared/llm_optimization.py` 가 새 필드를 도입하면 본 화이트리스트와 drift 가 발생할 수 있으므로, drift 가드 회귀 테스트 (예: `set(_LLM_OPTIMIZATION_FIELDS) == set(LLMOptimizationConfig 의 dataclass field names)`) 를 후속 wave 에서 추가하는 것이 안전하다.~~ → **Wave 5-G 가 세 표면 (`LLMOptimizationRequest.model_fields` / `LLMOptimizationConfig` dataclass fields / `_LLM_OPTIMIZATION_FIELDS`) 의 필드 집합이 동일함을 강제하는 3-layer drift 가드 테스트를 추가하여 본 관찰을 해소했다.**
   - `api/routers/analyze.py::LLMOptimizationRequest` (pydantic) 와 `shared/llm_optimization.py::LLMOptimizationConfig` (dataclass) 는 의도적으로 동일 셰이프를 *복제* 한다 (HTTP DTO → 도메인 dataclass 단방향 의존 유지 목적). 두 정의 간 향후 drift 는 본 wave 가 추가한 회귀 테스트가 가드한다.
 - Rationale / Approval log / Independent review 산출물:
   - Rationale: `/tmp/dallo-wave5f-clean-architecture-rationale.md`.
@@ -1723,11 +1723,40 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - 독립 리뷰: `/tmp/dallo-wave5f-independent-review.out.txt`.
 - Rollback (Wave 5-F): 본 wave 는 로컬 ``main`` 으로 머지 커밋 `ee52573 merge: integrate Wave 5-F LLM optimization plumbing` 로 통합되었으며, 구현 커밋은 `8ff61f7 feat(api): plumb llm optimization options` 다. 표준 revert 경로는 `git revert -m 1 ee52573` 이다 (구현 커밋만 단독 rollback 이 필요한 경우의 보조 형태는 `git revert 8ff61f7`). revert 시 `analyzer/pipeline.py` 의 `llm_optimization` keyword + `_apply_llm_optimization` 헬퍼, `api/routers/analyze.py` 의 `LLMOptimizationRequest` Pydantic 모델 + 라우터 wiring, `api/services/analysis_pipeline.py` / `api/tasks.py` 의 keyword forward, `tests/test_wave5f_llm_optimization_plumbing.py` 가 함께 사라진다. 카운트는 Wave 5-D post-state (`pytest tests/ -q` → 1012 passed) 로 돌아간다. 본 wave 의 옵션은 미지정 시 동작 100% 보존이며, 운영 caller 중 누구도 아직 `llm_optimization` 필드를 보내고 있지 않으므로 revert 의 운영 영향은 0 이다. Wave 2-A ~ Wave 5-E 의 모든 자산 (라우터/서비스/DTO 분리, `clock` / `file_io` / `runner` / `command_env` seam, dormant GitHub client seam, `docs/refactoring/redblue-backport-selection.md`, `shared/red_blue.py`, `shared/llm_optimization.py`, `api/routers/red_blue.py`, `api/services/red_blue_summary.py`, `api/services/red_blue_view.py`) 은 본 wave 의 revert 와 무관하게 그대로 유지된다. 본 문서 (`docs/refactoring/clean-architecture-wave-history.md`) 의 Wave 5-F 항목은 별도 doc-only 커밋 (`docs(refactoring): sync Wave 5-F post-merge status`) 으로 부착되며, 코드 revert 와 독립적으로 한 줄짜리 보조 revert (`git revert <doc-commit>`) 또는 후속 doc wave 로 정리할 수 있다.
 - 다음 권장 wave 후보 (아직 어떤 것도 승인되지 않음 — 매번 사용자 명시 승인 필요):
-  - **Wave 5-G** — `agent/llm_agent.py` 에 batch LLM (정렬된 청크 단위 호출) + clean-scan LLM 감사 (취약점 0 일 때 LLM 으로 false-negative 점검) 도입. provider/model 디폴트는 보존. fake LLM provider seam 으로 단위 테스트.
-  - **Wave 5-H** — `analyzer/heuristic_fallback.py` (가칭) 신규 + `analyzer/semgrep_runner.py` multi-config 지원 (Java SSRF 커스텀 룰 포함). 정적 분석기 미설치 / Semgrep 실패 경로에서 heuristic 결과로 폴백.
-  - **Wave 5-I** — `dashboard/src/` 의 RedBlueView 컴포넌트 추가 (Wave 5-D 가 출하한 DTO Optional 필드와 enrichment 응답 소비).
-  - **Wave 5-J** — `reports/report_generator.py` 의 Red/Blue 섹션 추가 (Wave 5-D 의 enrichment 데이터 + Wave 5-C 의 summary 엔드포인트 결과 소비).
+  - **Wave 5-G** *(이미 수행됨 — LLM optimization plumbing contract hardening, 본 문서의 §10.ter 참조)*.
+  - **Wave 5-H** — `agent/llm_agent.py` 에 batch LLM (정렬된 청크 단위 호출) + clean-scan LLM 감사 (취약점 0 일 때 LLM 으로 false-negative 점검) 도입. provider/model 디폴트는 보존. fake LLM provider seam 으로 단위 테스트.
+  - **Wave 5-I** — `analyzer/heuristic_fallback.py` (가칭) 신규 + `analyzer/semgrep_runner.py` multi-config 지원 (Java SSRF 커스텀 룰 포함). 정적 분석기 미설치 / Semgrep 실패 경로에서 heuristic 결과로 폴백.
+  - **Wave 5-J** — `dashboard/src/` 의 RedBlueView 컴포넌트 추가 + `reports/report_generator.py` 의 Red/Blue 섹션 추가 (Wave 5-C / 5-D 의 enrichment / summary 결과 소비).
   - 모든 후보 wave 는 별도 안전 TDD wave 가 필요하며, fake-seam 단위 테스트 + revertable 단일 머지 커밋 + 독립 read-only 리뷰의 표준 매트릭스를 따른다. 자세한 범위/검증/승인 게이트는 `docs/refactoring/redblue-backport-selection.md` §5 / §7 / §8 / §9 / §10 / 부록 A 참조.
+
+## 10.ter 현재 상태 (Wave 5-G 시점)
+
+- Wave 5-G 는 **LLM 입력 최적화 plumbing 계약 하드닝 마이크로 wave** 다. Wave 5-F 가 출하한 `llm_optimization` 옵션의 **라우터 → background dispatch** 경계를 *positional → keyword* 로 정리하고, 세 표면 (`api.routers.analyze.LLMOptimizationRequest.model_fields` / `shared.llm_optimization.LLMOptimizationConfig` dataclass fields / `analyzer.pipeline._LLM_OPTIMIZATION_FIELDS`) 의 필드 집합 동일성을 자동 가드한다. 응답 셰이프 / HTTP 계약 / 외부 동작 0 변경.
+- 본 wave 의 worktree diff 는 두 파일로 한정된다:
+  - `api/routers/analyze.py` — `start_analysis` 의 `background_tasks.add_task(_run_analysis, ...)` 와 `analyze_file` 의 `Thread(target=_run_analysis, args=(...))` 두 dispatch 를 모두 keyword 로 전환. 파일 업로드 경로는 `multi_patch=False` / `llm_optimization=None` 을 default-equivalent 로 명시 전달한다.
+  - `tests/test_wave5g_llm_optimization_contract_hardening.py` 신규 8 회귀:
+    - `TestLLMOptimizationFieldDriftGuard` — 세 표면 필드 집합 동일성 4 회귀 (request↔config / config↔pipeline / request↔pipeline / 8 필드 동결).
+    - `TestMemoryRouteKeywordForwarding` — 메모리 폴백 dispatch 가 positional 없이 kwargs only 인지, optimization 지정/미지정/Gemini 디폴트 보존 3 회귀.
+    - `TestFileUploadKeywordForwarding` — `/api/analyze/file` 가 `Thread(..., kwargs={...})` 로 dispatch 하며 모든 8 필드가 kwargs slot 에 들어가는지 1 회귀.
+  - `tests/test_api_analyze_router.py::test_upload_queues_job_without_running_pipeline` — 기존 회귀 1 건의 fake Thread 어설션을 새 keyword 계약에 맞춰 `args` → `kwargs` 로 갱신 (target 식별 / job_id / code / filename / use_llm 검증은 그대로).
+- 본 wave 가 의식적으로 **하지 않은 것**:
+  - `shared/schemas.py` 변경 0건 (계약 보존).
+  - `shared/llm_optimization.py` / `analyzer/pipeline.py` / `api/services/analysis_pipeline.py` / `api/tasks.py` 변경 0건 — 본 wave 는 *라우터 dispatch 경계* 만 손댄다.
+  - HTTP 응답 셰이프 변경 0건 — `/api/analyze` 와 `/api/analyze/file` 응답 dict 의 키 집합/값 셰이프는 한 글자도 바뀌지 않았다.
+  - 신규 LLM provider/policy 토큰 도입 0건 — Wave 5-A §6 의 **Reject** 결정 (gateway / claude-sonnet-4-6 / LLM_PRIMARY_PROVIDER) 보존. `git diff main...HEAD` 의 추가 라인에 해당 토큰 0건.
+  - 실 외부 호출 0건 — push / PR / deploy / production DB / 실 LLM / 실 Celery / 실 Redis / 실 GitHub API / 실 network 호출 모두 수행되지 않았다. 모든 테스트 더블은 pytest `monkeypatch` 만 사용한다.
+- 마지막 검증된 결과 (Wave 5-G 시점, worktree `w5g-llm-optimization-contract-hardening` 기준):
+  - RED (구현 전): 신규 테스트 8 중 forwarding 4 건이 실패 (`call["args"]` 가 비어 있어야 하는데 6 개의 positional 값 검출). drift 가드 4 건은 Wave 5-F 가 이미 세 표면을 정렬해 두었으므로 baseline 에서도 GREEN.
+  - GREEN (구현 후):
+    - Targeted Wave 5-G 셋트: `pytest tests/test_wave5g_llm_optimization_contract_hardening.py -q` → **8 passed**.
+    - Broader targeted 셋트: `pytest tests/test_wave5g_llm_optimization_contract_hardening.py tests/test_wave5f_llm_optimization_plumbing.py tests/test_shared_llm_optimization.py tests/test_api_analysis_pipeline_service.py tests/test_api_analyze_router.py tests/test_api_analyze_lazy_celery.py -q` → **144 passed in 2.61s**.
+    - Full: `pytest tests/ -q` → **1037 passed in 37.44s** (Wave 5-F baseline 1029 → +8 신규 회귀).
+  - 보안 스캔 (`git diff main...HEAD`): 추가 라인의 secret-like 리터럴 / `os.system(` / `shell=True` / `eval(` / `exec(` / `pickle.loads?(` 0건. `gateway` / `claude-sonnet` / `LLM_PRIMARY_PROVIDER` 토큰 추가 0건. `shared/schemas.py` diff → **0 bytes**.
+- 클린 아키텍처 적합성: 본 wave 는 router → service → Celery task → analyzer pipeline → shared helper 5-계층 분해를 손대지 않으며, 의존 방향을 한 줄도 뒤집지 않는다. 라우터 모듈 내부의 dispatch 호출 컨벤션만 keyword 로 통일하여, 향후 `_run_analysis` 시그니처가 진화해도 silent slot 침범을 차단한다. drift 가드는 세 표면이 다시 어긋날 경우 즉시 RED 로 신호하므로, Wave 5-E 의 순수 헬퍼와 Wave 5-F 의 plumbing 사이 계약이 *코드 차원에서* 강제된다.
+- Rationale / Approval log:
+  - Rationale: `/tmp/dallo-wave5g-clean-architecture-rationale.md`.
+  - 승인 로그: `/tmp/dallo-approval-log-wave5g.md`.
+- Rollback (Wave 5-G): 본 wave 의 구현은 단일 로컬 커밋이며, 표준 revert 경로는 해당 커밋의 `git revert <wave5g_commit>` (혹은 머지 후 형태라면 `git revert -m 1 <merge_commit>`) 이다. revert 시 `api/routers/analyze.py` 의 두 dispatch 호출은 다시 positional 형태로 돌아가고, `tests/test_wave5g_llm_optimization_contract_hardening.py` 와 `tests/test_api_analyze_router.py` 의 fake Thread 어설션 갱신이 함께 사라진다. 카운트는 Wave 5-F post-state (`pytest tests/ -q` → 1029 passed) 로 돌아간다. 본 wave 의 변경은 응답 셰이프 / HTTP 계약 0 변경이므로 revert 의 운영 영향은 0 이다. Wave 2-A ~ Wave 5-F 의 모든 자산은 본 revert 와 무관하게 그대로 유지된다.
 
 ## 10.bis 이전 상태 (Wave 5-D 시점, 참고)
 

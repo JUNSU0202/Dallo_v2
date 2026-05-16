@@ -205,7 +205,9 @@ class TestAnalyzeFileUpload:
                 self._kwargs = kwargs or {}
 
             def start(self):
-                thread_starts.append((self._target, self._args))
+                thread_starts.append(
+                    (self._target, self._args, self._kwargs)
+                )
 
         monkeypatch.setattr(analyze_router, "Thread", _FakeThread)
 
@@ -231,15 +233,18 @@ class TestAnalyzeFileUpload:
 
         # Thread.start() 는 정확히 한 번 호출되어야 한다
         assert len(thread_starts) == 1
-        target, args = thread_starts[0]
+        target, args, kwargs = thread_starts[0]
         # target 은 라우터의 _run_analysis (monkeypatch 된 노옵) 을 가리켜야 한다
         assert target is analyze_router._run_analysis
-        # args 의 첫 인자는 job_id, 두번째는 코드 문자열
-        assert args[0] == job_id
-        assert args[1] == "a=1\n"
-        assert args[2] == "upload.py"
+        # Wave 5-G: 모든 dispatch 값은 keyword 로만 전달되어야 한다
+        assert tuple(args) == (), (
+            f"파일 업로드 Thread 가 positional args 를 사용함: {args!r}"
+        )
+        assert kwargs["job_id"] == job_id
+        assert kwargs["code"] == "a=1\n"
+        assert kwargs["filename"] == "upload.py"
         # use_llm=False 가 전달되어야 한다
-        assert args[3] is False
+        assert kwargs["use_llm"] is False
 
 
 # ============================================================

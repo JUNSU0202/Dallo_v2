@@ -216,10 +216,19 @@ def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
         use_llm=req.use_llm,
     )
 
+    # Wave 5-G: positional → keyword forwarding. ``_run_analysis`` 시그니처가
+    # 미래에 바뀌어도 우연한 slot 침범 (예: optimization 이 multi_patch 자리에
+    # 들어가는 사고) 이 일어나지 않도록 명시적 kwargs 로만 전달한다.
     background_tasks.add_task(
-        _run_analysis, job_id, req.code, req.filename,
-        req.use_llm, req.provider, req.model, req.multi_patch,
-        req.llm_optimization,
+        _run_analysis,
+        job_id=job_id,
+        code=req.code,
+        filename=req.filename,
+        use_llm=req.use_llm,
+        provider=req.provider,
+        model=req.model,
+        multi_patch=req.multi_patch,
+        llm_optimization=req.llm_optimization,
     )
 
     return {
@@ -304,9 +313,22 @@ async def analyze_file(file: UploadFile = File(...), use_llm: bool = Form(True))
         job_id=job_id, filename=req.filename,
     )
 
+    # Wave 5-G: positional ``args=(...)`` → ``kwargs={...}`` 로 전환. 메모리
+    # 폴백 경로와 동일한 keyword 계약을 유지하고, ``multi_patch`` /
+    # ``llm_optimization`` 은 default-equivalent 값 (False / None) 으로 명시
+    # 전달한다.
     t = Thread(
         target=_run_analysis,
-        args=(job_id, req.code, req.filename, req.use_llm, req.provider, req.model),
+        kwargs={
+            "job_id": job_id,
+            "code": req.code,
+            "filename": req.filename,
+            "use_llm": req.use_llm,
+            "provider": req.provider,
+            "model": req.model,
+            "multi_patch": False,
+            "llm_optimization": None,
+        },
     )
     t.start()
 
