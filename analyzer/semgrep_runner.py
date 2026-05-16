@@ -15,12 +15,39 @@ import json
 import subprocess
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Sequence, Union
 
 from analyzer.bandit_runner import Vulnerability, AnalysisResult
 from shared.command_env import build_child_env
 from analyzer.file_io import FileIO, get_default_file_io
 from analyzer.static_tool_command_runner import StaticToolCommandRunner
+
+
+SemgrepConfig = Union[str, Sequence[str]]
+
+
+def _normalize_config(config: SemgrepConfig) -> tuple[str, ...]:
+    """``config`` 인자를 정규화된 ``tuple[str, ...]`` 로 변환한다.
+
+    - ``str`` 은 항상 단일 config 로 취급한다 (문자 시퀀스로 분해 금지).
+    - list/tuple 등 시퀀스는 entry 별 ``str`` 타입을 강제한다.
+    - 빈 시퀀스는 거부한다 (룰셋 0개로 silent disable 방지).
+    """
+    if isinstance(config, str):
+        return (config,)
+    if not isinstance(config, (list, tuple)):
+        raise TypeError(
+            f"config 는 str 또는 list/tuple[str] 여야 합니다 (got {type(config).__name__})"
+        )
+    items = tuple(config)
+    if not items:
+        raise ValueError("config 시퀀스는 비어있을 수 없습니다 (룰셋 0개 차단)")
+    for entry in items:
+        if not isinstance(entry, str):
+            raise TypeError(
+                f"config 시퀀스의 모든 entry 는 str 이어야 합니다 (got {type(entry).__name__})"
+            )
+    return items
 
 
 # Wave 4-G: Semgrep 전용 child env allowlist.
@@ -81,22 +108,29 @@ class SemgrepRunner:
 
     def __init__(
         self,
-        config: str = "auto",
+        config: SemgrepConfig = "auto",
         runner: Optional[StaticToolCommandRunner] = None,
         *,
         file_io: Optional[FileIO] = None,
     ):
         """
         Args:
-            config: Semgrep 룰 설정
-                    - "auto": Semgrep 자동 감지 룰
-                    - "p/security-audit": 보안 감사 룰셋
-                    - "p/owasp-top-ten": OWASP Top 10 룰셋
+            config: Semgrep 룰 설정. 단일 ``str`` (예: ``"auto"``,
+                ``"p/security-audit"``) 또는 다중 config 시퀀스
+                (예: ``("p/security-audit", "p/owasp-top-ten")``) 모두 허용.
+                다중 config 는 argv 에 순서를 보존한 채 반복되는
+                ``--config <value>`` 쌍으로 emit 된다. 빈 시퀀스 / 비-문자열
+                entry 는 거부된다 (Wave 5-H1).
             runner: 외부 명령 실행 어댑터(테스트용 더블 주입 가능)
             file_io: 결과 JSON 저장 + snippet enrichment 라인 읽기 경계 (Wave 4-N).
                 ``None`` 이면 ``run`` 시점에 lazy 로 기본 ``FileIO`` 가 해석된다.
         """
-        self.config = config
+        self._configs: tuple[str, ...] = _normalize_config(config)
+        # 호출자/기존 테스트가 읽는 ``self.config`` 형태 보존:
+        # 단일 config 입력은 단일 문자열로, 다중 config 입력은 tuple 로 노출.
+        self.config: SemgrepConfig = (
+            self._configs[0] if isinstance(config, str) else self._configs
+        )
         self._runner = runner or StaticToolCommandRunner()
         self._file_io = file_io
 
@@ -118,13 +152,10 @@ class SemgrepRunner:
         """
         result = AnalysisResult(tool="semgrep", target_path=target_path)
 
-        cmd = [
-            "semgrep",
-            "--config", self.config,
-            "--json",
-            "--quiet",
-            target_path,
-        ]
+        cmd: list[str] = ["semgrep"]
+        for cfg in self._configs:
+            cmd.extend(["--config", cfg])
+        cmd.extend(["--json", "--quiet", target_path])
 
         try:
             # Wave 4-G: 부모 환경 전체를 자식에게 상속시키지 않고
