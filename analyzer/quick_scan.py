@@ -166,6 +166,33 @@ def detect_language(filename: str) -> str:
     return _EXT_LANGUAGE_MAP.get(ext, "python")
 
 
+def _rule_requires_all_patterns(rule: dict) -> bool:
+    """룰 메타데이터가 동일 라인 all-pattern 매칭을 요구하는지 판정.
+
+    옵트인 신호: ``match_mode="all"`` 또는 ``require_all=True``. 그 외 모든
+    경우(메타데이터 미지정 / ``match_mode="any"`` / falsy ``require_all``)는
+    legacy any-pattern 동작으로 유지된다.
+    """
+    if rule.get("require_all") is True:
+        return True
+    mode = rule.get("match_mode")
+    if isinstance(mode, str) and mode.lower() == "all":
+        return True
+    return False
+
+
+def _make_finding(rule: dict, line_num: int, line_text: str) -> dict:
+    return {
+        "rule_id": rule["id"],
+        "title": rule["title"],
+        "severity": rule["severity"],
+        "cwe": rule["cwe"],
+        "line": line_num,
+        "code": line_text.strip(),
+        "message": rule["message"],
+    }
+
+
 def scan(code: str, language: str) -> list:
     """정규식 기반 빠른 취약점 스캔 (밀리초 단위 응답)."""
     findings: list = []
@@ -174,6 +201,22 @@ def scan(code: str, language: str) -> list:
     for rule in QUICK_SCAN_RULES:
         if language not in rule["languages"]:
             continue
+
+        if _rule_requires_all_patterns(rule):
+            # all-mode: 모든 패턴이 동일 라인에서 매치된 라인에만 finding.
+            # 패턴 중 하나라도 invalid regex 면 fail-closed (룰 전체 스킵).
+            try:
+                regexes = [re.compile(p, re.IGNORECASE) for p in rule["patterns"]]
+            except re.error:
+                continue
+            if not regexes:
+                continue
+            for line_num, line_text in enumerate(lines, 1):
+                if all(rx.search(line_text) for rx in regexes):
+                    findings.append(_make_finding(rule, line_num, line_text))
+            continue
+
+        # legacy any-mode: 한 패턴이라도 매치되면 finding, invalid regex 는 스킵.
         for pattern in rule["patterns"]:
             try:
                 regex = re.compile(pattern, re.IGNORECASE)
@@ -184,15 +227,7 @@ def scan(code: str, language: str) -> list:
                             for f in findings
                         )
                         if not already:
-                            findings.append({
-                                "rule_id": rule["id"],
-                                "title": rule["title"],
-                                "severity": rule["severity"],
-                                "cwe": rule["cwe"],
-                                "line": line_num,
-                                "code": line_text.strip(),
-                                "message": rule["message"],
-                            })
+                            findings.append(_make_finding(rule, line_num, line_text))
             except re.error:
                 continue
 
