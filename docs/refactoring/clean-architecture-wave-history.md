@@ -1,6 +1,6 @@
 # Dallo 클린 아키텍처 리팩터링 Wave 이력
 
-> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 5-G 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
+> 본 문서는 Dallo DevSecOps 프로젝트가 **Wave 2-A 부터 Wave 5-H2 까지** 어떤 순서와 이유로 구조를 정리해 왔는지를 기록한다.
 > 후일 코드를 다시 열지 않고도 "왜 이 방향으로 갔는가"를 재구성할 수 있도록 설계되었다.
 > 본 문서에는 어떠한 운영 비밀(secret), 토큰 값, 자격 증명도 포함되어 있지 않다. 환경 변수 이름만이 등장한다.
 
@@ -1798,6 +1798,56 @@ Wave 4 의 모든 단계에는 별도 rationale 문서가 존재한다(`/tmp/dal
   - 보안 스캔 (`git diff main...HEAD`): 추가 라인의 secret-like 리터럴 / `os.system(` / `shell=True` / `eval(` / `exec(` / `pickle.loads?(` 0건. `gateway` / `claude-sonnet` / `LLM_PRIMARY_PROVIDER` 토큰 추가 0건. `shared/schemas.py` diff → **0 bytes**. `analyzer/quick_scan.py` / `analyzer/heuristic_runner.py` / `shared/command_env.py` diff → **0 bytes**.
 - 클린 아키텍처 적합성: 본 wave 는 Dallo_v2 의 **외부 도구 어댑터 (subprocess seam) → 정적 분석 runner → 분석 파이프라인** 분해를 그대로 유지하며, 의존 방향을 한 줄도 뒤집지 않는다. `SemgrepRunner` 의 책임은 여전히 "argv 구성 + 출력 파싱 + 한국어 에러 분기" 에 한정되고, subprocess 호출은 Wave 3-G 의 `StaticToolCommandRunner` 어댑터에 위임된다. 다중 config 정규화 / 검증은 모듈 레벨 헬퍼 `_normalize_config` 로 격리되어 향후 입력 정책 (예: 룰셋 ID 화이트리스트) 확장 지점이 명확하다.
 - Rollback (Wave 5-H1): 본 wave 의 구현은 단일 로컬 커밋이며, 표준 revert 경로는 머지 전이라면 해당 커밋의 `git revert <wave5h1_commit>`, 머지 후라면 `git revert -m 1 <merge_commit>` 이다. revert 시 `analyzer/semgrep_runner.py` 의 `SemgrepConfig` 별칭 / `_normalize_config` 헬퍼 / 다중 config argv 루프, `tests/test_semgrep_multi_config_argv.py` 가 함께 사라진다. 카운트는 Wave 5-G post-state (`pytest tests/ -q` → 1037 passed) 로 돌아간다. 본 wave 의 변경은 단일 문자열 호출 경로에 대해 동작 100% 보존이며, `detect_and_run()` 외 운영 caller 중 누구도 아직 다중 config 시퀀스를 넘기지 않으므로 revert 의 운영 영향은 0 이다. Wave 2-A ~ Wave 5-G 의 모든 자산은 본 revert 와 무관하게 그대로 유지된다.
+
+## 10.quinquies 현재 상태 (Wave 5-H2 시점)
+
+- Wave 5-H2 는 **Quick Scan `require_all` / `match_mode` 정책 seam 마이크로 wave** 다 (구현 커밋 `24382d6 feat(analyzer): add quick scan match mode seam`, 로컬 main 머지 커밋 `d30e6e1 merge: integrate Wave 5-H2 quick scan policy seam`). `analyzer/quick_scan.py` 의 `scan(code, language)` 안에 향후 quick-scan 룰이 "동일 라인에서 모든 패턴이 함께 매치되어야만 finding" 을 옵트인할 수 있는 작은 정책 seam 을 도입했다. 응답 셰이프 / HTTP 계약 / 외부 동작 / DB / API / agent / validator / shared.schemas / Semgrep runner / heuristic / LLM provider / YAML 룰 파일 0 변경.
+- 옛 위험: `scan()` 은 룰의 `patterns` 중 *어느 하나* 라도 매치되면 finding 을 생성하는 legacy any-mode 만 알고 있었다. 후속 wave 에서 더 정밀한 quick-scan 룰 — 예) CWE-288 인증 우회 패턴처럼 *동일 라인* 에서 인증 체크 부재 + 민감 동작 호출 두 조각이 동시에 보여야만 의미가 있는 다 조각 매칭 — 을 추가하려면 매칭 정책을 *룰 자체의 메타데이터* 로 옵트인할 수 있는 seam 이 먼저 있어야 했다. 단순히 호출부에서 정규식을 합치는 방식은 (a) 그룹 캡처/`re` flag 의 의미를 망가뜨리고, (b) "한 라인" 이라는 라인 단위 의미를 정규식 안에 다시 인코딩해야 하므로 가독성과 안전성을 모두 잃는다. 그리고 all-mode 가 도입된다면 *invalid regex 시 매치 범위가 조용히 넓어지지 않는* fail-closed 동작도 같이 가져와야 했다 — legacy any-mode 는 invalid regex 한 개를 스킵해도 다른 valid regex 가 여전히 finding 을 만들 수 있어 정책이 모호해진다.
+- 본 wave 의 worktree diff 는 두 파일로 한정된다:
+  - `analyzer/quick_scan.py` — 두 개의 모듈 레벨 헬퍼 추가. (1) `_rule_requires_all_patterns(rule) -> bool` 는 `rule.get("require_all") is True` (정확히 `True` 만 — truthy 값 일반은 옵트인되지 않음) 이거나 `rule.get("match_mode")` 가 대소문자 무관 `"all"` 문자열일 때 all-mode 를 반환하고, 그 외(메타데이터 미지정 / `match_mode="any"` / falsy `require_all`) 는 legacy any-mode 를 반환한다. (2) `_make_finding(rule, line_number, stripped_line) -> dict` 는 finding dict (`rule_id` / `title` / `severity` / `cwe` / `line` / `code` / `message`) 의 7 키 셰이프를 한 곳에서만 만든다. `scan()` 본체는 룰별로 `_rule_requires_all_patterns` 분기를 가지며, all-mode 면 `[re.compile(p, re.IGNORECASE) for p in rule["patterns"]]` 컴파일을 `try/except re.error` 로 감싸 *하나라도* invalid regex 면 룰 전체를 스킵 (fail-closed), 빈 patterns 리스트도 룰을 스킵 (광범위 매치 차단). 컴파일이 성공하면 각 라인에 대해 `all(rx.search(line_text) for rx in regexes)` 가 True 일 때만 `_make_finding` 을 append. legacy any-mode 분기는 종전 그대로 — 패턴 하나씩 컴파일하고 개별 invalid regex 는 스킵, 나머지 valid regex 는 계속 평가하며, 룰/라인 당 finding 은 한 번만 부착되고 마지막에 `findings.sort(key=lambda f: f["line"])` 로 라인 정렬되어 반환.
+  - `tests/test_quick_scan_policy_seam.py` 신규 8 회귀 (모든 테스트는 fixture `_restore_quick_scan_rules` 로 `QUICK_SCAN_RULES` 를 원본 list 로 복귀시켜 production 룰을 오염시키지 않는다):
+    - `test_missing_metadata_defaults_to_legacy_any_behavior` — `match_mode` / `require_all` 모두 미지정인 더미 룰이 alpha-only / beta-only 두 라인 모두 finding 을 만드는지 (legacy any-mode 보존).
+    - `test_match_mode_any_matches_when_single_pattern_matches` — `match_mode="any"` 가 legacy 동작의 명시적 alias 임 확인.
+    - `test_match_mode_all_requires_every_pattern_on_same_line` — `match_mode="all"` 이 두 패턴이 동시에 등장한 라인 1 개에만 finding 을 만들며 finding shape 의 7 키 셰이프가 보존되는지 확인.
+    - `test_require_all_true_is_alias_for_all_pattern_matching` — `require_all=True` 가 `match_mode="all"` 의 alias 로 두 패턴이 같이 등장한 라인들에서만 finding 을 만드는지 확인.
+    - `test_real_weak_hash_rule_still_triggers_on_python_md5` — production 룰 `QS-WEAK-HASH` 가 monkeypatch 없이도 python `hashlib.md5(...)` 에 대해 동일 라인에서 finding 을 만드는지 (실제 룰 동작 보존).
+    - `test_language_filter_skips_non_listed_language` — `languages=["python"]` 룰이 java 호출 시 finding 0, python 호출 시 finding 1 임을 확인 (언어 필터 보존).
+    - `test_findings_sorted_by_line_and_one_per_rule_line` — 라인 정렬 보존, 같은 라인/룰 쌍은 단일 finding (중복 매치 회귀 가드).
+    - `test_match_mode_all_fails_closed_on_invalid_regex` — `match_mode="all"` + 잘못된 regex `"("` 가 한 패턴이라도 포함되면 어떤 finding 도 생성하지 않는 fail-closed (보안 양성 동작) 확인.
+- 본 wave 가 의식적으로 **하지 않은 것**:
+  - `shared/schemas.py` 변경 0건 (계약 보존).
+  - `analyzer/semgrep_runner.py` / `analyzer/heuristic_runner.py` / `analyzer/pipeline.py` / `analyzer/bandit_runner.py` / `analyzer/static_tool_command_runner.py` 변경 0건 — 본 wave 는 *quick_scan 의 정책 seam* 만 손댄다.
+  - `QUICK_SCAN_RULES` 에 정의된 8 개 production 룰 (`QS-SQL-INJECT` / `QS-CMD-INJECT` / `QS-HARDCODED-SECRET` / `QS-WEAK-HASH` / `QS-XSS` / `QS-UNSAFE-DESERIAL` / `QS-PATH-TRAVERSAL` / `QS-INSECURE-RANDOM`) 의 `patterns` / `languages` / `severity` / `cwe` / `message` 한 글자도 바뀌지 않았다. 어떤 production 룰에도 `match_mode` / `require_all` 메타데이터를 부착하지 않았으므로 모두 legacy any-mode 로 평가된다.
+  - 신규 production quick-scan 룰 0건 — 특히 후속 wave 후보인 *CWE-288 인증 우회* quick-scan 룰은 본 wave 의 범위가 아니며 활성화되지 않았다.
+  - `config/semgrep/*.yml` 또는 신규 YAML 룰 파일 0건 — 커스텀 로컬 Semgrep YAML 도입 / `detect_and_run` 으로의 활성화는 후속 wave (Wave 5-H 본편) 의 범위이며 본 wave 는 손대지 않았다.
+  - `api/routers/*` / `api/services/*` / `api/dto/*` / `api/server.py` / `agent/*` / `validator/*` / `db/*` / `dashboard/*` / `reports/*` 변경 0건. 라우터 / 서비스 / 분석 파이프라인 / DTO / 응답 셰이프 / HTTP 계약 한 글자도 바뀌지 않았다.
+  - `api/routers/quick_scan.py` 변경 0건 — 라우터는 여전히 `quick_scan.scan(code, language)` 를 호출만 하고 반환된 finding list 를 그대로 응답에 넣는다.
+  - 신규 LLM provider / 디폴트 모델 / policy 토큰 도입 0건 — Wave 5-A §6 의 **Reject** 결정 (`gateway` / `claude-sonnet-4-6` / `LLM_PRIMARY_PROVIDER`) 보존. Gemini / Google AI Studio 디폴트 보존.
+  - 실 외부 호출 0건 — push / PR / deploy / production DB / 실 외부 API / network / 실 LLM / 실 GitHub / 실 secret 호출 모두 수행되지 않았다. 모든 테스트는 pytest `monkeypatch` 만 사용한다.
+- 보존된 동작 (회귀 가드 포함):
+  - `scan(code, language) -> list[dict]` 반환 셰이프 — 라인 오름차순 정렬, finding 키 `rule_id` / `title` / `severity` / `cwe` / `line` / `code` / `message` 7 개.
+  - `QUICK_SCAN_RULES` 정의의 8 개 production 룰 모두 legacy any-mode 로 평가 (메타데이터 미부착).
+  - `detect_language(filename)` 의 확장자 → 언어 매핑과 알 수 없는 확장자에 대한 `"python"` 폴백.
+  - 룰/라인 당 finding 단일 부착 (legacy any-mode 의 중복 매치 가드 보존).
+  - `re.IGNORECASE` flag 보존. `re.error` 발생 시 룰/패턴 단위 회복 정책 보존 (legacy any-mode: 개별 invalid regex 스킵, valid regex 는 계속 평가 / all-mode: 룰 전체 fail-closed).
+  - Wave 2-C 의 모듈 분해 (FastAPI / DB / 외부 I/O 의존 0, 라우터가 모듈을 호출), Wave 5-H1 의 Semgrep runner argv seam, Wave 5-G 의 LLM optimization plumbing 모두 그대로.
+- 마지막 검증된 결과 (Wave 5-H2 시점):
+  - RED (구현 전, `/tmp/dallo-wave5h2-impl.out.txt`):
+    - `pytest tests/test_quick_scan_policy_seam.py -q` → **3 failed, 5 passed**. 실패한 회귀: (a) `match_mode="all"` 더미 룰이 옛 any-mode 로 평가되어 alpha-only / beta-only 라인까지 finding 을 만들어 라인 수가 1 이 아닌 3 으로 나옴, (b) `require_all=True` 더미 룰 동일 실패, (c) `match_mode="all"` + invalid regex 룰이 fail-closed 되지 않고 valid regex `alpha` 만으로 finding 을 만들어 매치 범위가 침묵 확대됨. 회귀 가드가 실제로 baseline 결함 (정책 seam 부재 + all-mode fail-closed 부재) 을 정확히 잡는다는 사실을 증명한다.
+  - GREEN (구현 후, 동일 산출물):
+    - Targeted Wave 5-H2 셋트: `pytest tests/test_quick_scan_policy_seam.py -q` → **8 passed**.
+    - Adjacent (quick_scan clock seam 회귀): `pytest tests/test_quick_scan_policy_seam.py tests/test_quick_scan_clock_seam.py -q` → **17 passed**.
+    - quick_scan 관련 전체: `pytest tests/ -k 'quick_scan or quick-scan'` → **20 passed, 1036 deselected**.
+    - Full: `pytest tests/ -q` → **1056 passed in 37.32s** (Wave 5-H1 baseline 1048 → +8 신규 회귀).
+- 독립 read-only 리뷰 (`/tmp/dallo-wave5h2-independent-review.out.txt`): **VERDICT: APPROVED**. 리뷰는 (a) worktree diff 가 정확히 `analyzer/quick_scan.py` + `tests/test_quick_scan_policy_seam.py` 두 파일에 한정되었음, (b) `shared/schemas.py` / API 라우터 / 서비스 / auth / DTO / Gemini 디폴트 / provider 정책 토큰 (`gateway` / `claude-sonnet-4-6` / `LLM_PRIMARY_PROVIDER`) 한 글자도 바뀌지 않았음, (c) 신규 코드에 subprocess / network / 파일 I/O / DB / FastAPI 결합이 추가되지 않았음, (d) 8 개 production quick-scan 룰이 메타데이터 미부착으로 legacy any-mode 동작을 100% 보존함, (e) all-mode 의 invalid-regex fail-closed 가 보안 양성 동작임을 모두 확인했다.
+- 클린 아키텍처 적합성: 본 wave 는 Dallo_v2 의 **라우터 → 도메인 모듈 (analyzer) → 룰 데이터** 분해를 그대로 유지하며, 의존 방향을 한 줄도 뒤집지 않는다. `analyzer/quick_scan.py` 는 여전히 FastAPI / DB / subprocess / network / settings / filesystem 의존 0 의 순수 도메인 모듈이며 (Wave 2-C 분해 그대로), 라우터 `api/routers/quick_scan.py` 는 모듈 함수 `scan()` 만 호출한다. 새로운 정책 seam 은 *룰 데이터의 메타데이터* 와 *모듈 내부 헬퍼 2 개* 로만 표현되어 호출 표면 (`scan(code, language) -> list[dict]`) 의 시그니처가 한 글자도 변하지 않는다 — 외부 contract 는 데이터 시그널 (`match_mode` / `require_all`) 로 옵트인 가능하지만 모든 production 룰은 시그널을 부착하지 않은 상태이므로 동작이 그대로다. 두 헬퍼 `_rule_requires_all_patterns` 와 `_make_finding` 은 *정책 판정* 과 *finding 셰이프 생성* 이라는 두 책임을 분리하여, all-mode 와 any-mode 가 finding shape 를 서로 다르게 만들 수 없는 *단일 출처* 를 강제한다 — 이는 향후 정책 분기가 늘어나도 shape drift 가 도입될 수 없음을 보장하는 정적 invariant 다.
+- Rollback (Wave 5-H2): 본 wave 는 로컬 ``main`` 으로 머지 커밋 `d30e6e1 merge: integrate Wave 5-H2 quick scan policy seam` 로 통합되었으며, 구현 커밋은 `24382d6 feat(analyzer): add quick scan match mode seam` 이다. 표준 revert 경로는 `git revert -m 1 d30e6e1` 이다 (구현 커밋만 단독 rollback 이 필요한 경우의 보조 형태는 `git revert 24382d6`). revert 시 `analyzer/quick_scan.py` 의 `_rule_requires_all_patterns` / `_make_finding` 헬퍼와 `scan()` 의 all-mode 분기, `tests/test_quick_scan_policy_seam.py` 8 회귀가 함께 사라진다. 카운트는 Wave 5-H1 post-state (`pytest tests/ -q` → 1048 passed) 로 돌아간다. production 룰 어느 것에도 `match_mode` / `require_all` 메타데이터를 부착하지 않았으므로 모든 production 동작이 legacy any-mode 로 평가되어 왔으며, revert 의 운영 영향은 0 이다. Wave 2-A ~ Wave 5-H1 의 모든 자산 (라우터/서비스/DTO 분리, `clock` / `file_io` / `runner` / `command_env` seam, dormant GitHub client seam, `docs/refactoring/redblue-backport-selection.md`, `shared/red_blue.py`, `shared/llm_optimization.py`, Semgrep multi-config argv seam) 은 본 revert 와 무관하게 그대로 유지된다.
+- 다음 권장 후속 옵션 (아직 어떤 것도 승인되지 않음 — 매번 사용자 명시 승인 필요):
+  - heuristic fallback 의 순수 헬퍼 (clock/file_io 미의존, dict in / dict out) 도입과 `detect_and_run()` 에서의 옵트인 호출 — 본 wave 의 정책 seam 과 직접 결합되지 않는 독립 후보.
+  - 커스텀 로컬 Semgrep YAML (예: Java SSRF / 인증 우회 룰셋) 추가와 `detect_and_run` 의 다중 config 활성화 — Wave 5-H1 의 multi-config argv seam 위에서만 안전하게 슬라이스 가능.
+  - 프론트엔드 RedBlueView / 리포트 Red/Blue 섹션 (각각 Wave 5-I / 5-J 후보) 의 소비 추가 — 본 wave 의 quick_scan 출력 shape 와 결합되지 않는다.
+  - LLM / agent 레벨 동작 (예: batch+clean audit 임계값 조정) — 본 wave 와 무관한 별개 후보.
+  - 위 네 옵션 모두 별도 안전 TDD wave 가 필요하며, fake-seam 단위 테스트 + revertable 단일 머지 커밋 + 독립 read-only 리뷰의 표준 매트릭스를 따른다. *본 wave 는 위 어느 후속 옵션에도 승인을 부여하지 않는다.*
 
 ## 10.bis 이전 상태 (Wave 5-D 시점, 참고)
 
