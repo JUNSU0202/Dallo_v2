@@ -259,9 +259,32 @@ class SemgrepRunner:
         return result
 
 
+# Wave 5-H4: 저장소-로컬 Semgrep 룰셋. ``detect_and_run()`` 오케스트레이션
+# 경로에서만 ``"auto"`` 와 함께 다중 config 로 활성화된다. ``SemgrepRunner``
+# 기본 생성자에는 영향 없음 (회귀 가드는 Wave 4/5-H1 테스트 그대로).
+_DALLO_LOCAL_SEMGREP_YAML = os.path.abspath(
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "config",
+        "semgrep",
+        "dallo-local.yml",
+    )
+)
+
+
+def _detect_and_run_semgrep_configs() -> tuple[str, ...]:
+    """``detect_and_run()`` 가 사용할 Semgrep config 튜플을 반환한다.
+
+    기존 ``"auto"`` 동작을 보존하면서 Wave 5-H1 의 multi-config argv seam
+    위에 저장소-로컬 룰셋 절대경로를 함께 emit 한다.
+    """
+    return ("auto", _DALLO_LOCAL_SEMGREP_YAML)
+
+
 def detect_and_run(target_path: str) -> AnalysisResult:
     """파일 확장자를 감지하고 적절한 분석기를 실행합니다."""
     ext = os.path.splitext(target_path)[1].lower()
+    semgrep_configs = _detect_and_run_semgrep_configs()
 
     if ext == ".py":
         # Python: Bandit + Semgrep 병합
@@ -271,14 +294,14 @@ def detect_and_run(target_path: str) -> AnalysisResult:
         bandit = BanditRunner()
         bandit_result = bandit.run(target_path)
 
-        semgrep = SemgrepRunner(config="auto")
+        semgrep = SemgrepRunner(config=semgrep_configs)
         semgrep_result = semgrep.run(target_path)
 
         return merge_results(bandit_result, semgrep_result)
 
     elif ext in EXTENSION_MAP:
         # 기타 언어: Semgrep만
-        runner = SemgrepRunner(config="auto")
+        runner = SemgrepRunner(config=semgrep_configs)
         return runner.run(target_path)
 
     else:
