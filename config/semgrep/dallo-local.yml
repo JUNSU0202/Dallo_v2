@@ -1,9 +1,9 @@
 # Dallo 로컬 Semgrep 룰셋 (Wave 5-H4)
 #
-# - 본 파일은 저장소-로컬 Semgrep 룰만 정의한다. registry/cloud config
-#   (p/..., r/..., auto, URL, token 기반 private config) 는 사용하지 않는다.
-# - detect_and_run() 오케스트레이션 경로에서만 "auto" 와 함께 다중 config
-#   로 활성화된다 (SemgrepRunner 기본 생성자에는 영향 없음).
+# - 본 파일은 저장소-로컬 Semgrep 룰만 정의한다. registry, cloud, URL,
+#   token 기반 private config 는 사용하지 않는다.
+# - detect_and_run() 오케스트레이션 경로에서만 자동 탐지 모드와 함께 다중
+#   config 로 활성화된다 (SemgrepRunner 기본 생성자에는 영향 없음).
 # - 룰은 보수적으로 시작한다. 본 wave 의 목표는 안전한 로컬 룰셋 plumbing
 #   과 활성화이며, 룰 자체의 완성도가 아니다.
 rules:
