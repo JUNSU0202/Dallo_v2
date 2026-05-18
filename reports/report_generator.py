@@ -31,6 +31,8 @@ import os
 from datetime import datetime
 from typing import Any, Optional
 
+from shared.red_blue import build_red_blue_summary
+
 
 def _g(d: Optional[dict], key: str, default: Any = "") -> Any:
     """None-safe .get."""
@@ -87,12 +89,11 @@ class ReportGenerator:
         branch = html.escape(str(_g(data, "branch", "")))
         generated_at = datetime.now().isoformat(timespec="seconds")
 
-        vuln_rows = "".join(
-            self._html_vuln_row(v) for v in (_g(data, "vulnerabilities", []) or [])
-        )
-        patch_rows = "".join(
-            self._html_patch_row(p) for p in (_g(data, "patches", []) or [])
-        )
+        vulns = _g(data, "vulnerabilities", []) or []
+        patches = _g(data, "patches", []) or []
+        vuln_rows = "".join(self._html_vuln_row(v) for v in vulns)
+        patch_rows = "".join(self._html_patch_row(p) for p in patches)
+        red_blue_block = self._html_red_blue_block(vulns, patches)
         deps_block = self._html_deps_block(deps_data)
 
         return f"""<!DOCTYPE html>
@@ -142,6 +143,7 @@ class ReportGenerator:
   <div><strong>{s["patches_verified"]}</strong>수정안 검증</div>
 </div>
 
+{red_blue_block}
 <h2>취약점 ({s["total"]}건)</h2>
 {('<table><thead><tr><th>ID</th><th>심각도</th><th>도구/규칙</th><th>제목</th>'
   '<th>위치</th><th>CWE</th></tr></thead><tbody>' + vuln_rows + '</tbody></table>')
@@ -185,6 +187,8 @@ class ReportGenerator:
         lines.append("")
 
         vulns = _g(data, "vulnerabilities", []) or []
+        patches = _g(data, "patches", []) or []
+        lines.extend(self._md_red_blue_block(vulns, patches))
         lines.append(f"## 취약점 ({s['total']}건)")
         lines.append("")
         if not vulns:
@@ -194,7 +198,6 @@ class ReportGenerator:
                 lines.extend(self._md_vuln_block(v))
         lines.append("")
 
-        patches = _g(data, "patches", []) or []
         lines.append(f"## LLM 수정안 ({s['patches_generated']}건)")
         lines.append("")
         if not patches:
@@ -403,3 +406,149 @@ class ReportGenerator:
     def _md_safe_code(text: str) -> str:
         """코드 블록 안에서 ``` 가 충돌하지 않도록 백틱 3연속을 치환."""
         return text.replace("```", "''`")
+
+    @staticmethod
+    def _md_inline_safe(text: Any) -> str:
+        """Markdown 인라인/테이블 셀에 사용할 사용자 문자열을 안전 치환.
+
+        - 파이프(``|``)는 ``\\|`` 로 이스케이프하여 테이블을 깨지 않음.
+        - 개행은 공백으로 평탄화.
+        - 백틱 3연속(```````)은 ``````+안전치환
+          으로 바꿔 새 코드 펜스 생성을 차단.
+        """
+        s = "" if text is None else str(text)
+        s = s.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        s = s.replace("```", "``​`")
+        s = s.replace("|", "\\|")
+        return s
+
+    # ------------------------------------------------------------
+    # Red/Blue 섹션 헬퍼 (Wave 5-J)
+    # ------------------------------------------------------------
+
+    def _html_red_blue_block(self, vulns: list, patches: list) -> str:
+        """vulnerabilities/patches 가 모두 비어 있으면 빈 문자열."""
+        if not vulns and not patches:
+            return ""
+        summary = build_red_blue_summary(
+            list(vulns), list(patches), include_attack_paths=True
+        )
+        red = summary.get("red_team", {}) or {}
+        blue = summary.get("blue_team", {}) or {}
+        cmp_ = summary.get("comparison", {}) or {}
+        paths = summary.get("attack_paths", []) or []
+
+        path_rows: list[str] = []
+        for row in paths:
+            row = row or {}
+            file_path = html.escape(str(row.get("file_path", "")))
+            line_no = html.escape(str(row.get("line_number", "")))
+            path_rows.append(
+                "<tr>"
+                f"<td><code>{html.escape(str(row.get('finding_id', '')))}</code></td>"
+                f"<td>{html.escape(str(row.get('title', '')))}</td>"
+                f"<td>{html.escape(str(row.get('cwe_id') or '-'))}</td>"
+                f"<td><code>{file_path}:{line_no}</code></td>"
+                f"<td>{html.escape(str(row.get('attack_path', '')))}</td>"
+                f"<td>{html.escape(str(row.get('status', '')))}</td>"
+                f"<td>{html.escape(str(row.get('defense', '')))}</td>"
+                f"<td>{html.escape(str(row.get('residual_risk', '')))}</td>"
+                "</tr>"
+            )
+
+        return (
+            "<h2>Red/Blue 보안 관점</h2>"
+            '<div class="summary-grid">'
+            f"<div><strong>{int(red.get('total_findings', 0) or 0)}</strong>Red Team 탐지</div>"
+            f"<div><strong>{int(red.get('critical_or_high', 0) or 0)}</strong>HIGH/CRITICAL</div>"
+            f"<div><strong>{int(red.get('unique_cwe', 0) or 0)}</strong>고유 CWE</div>"
+            f"<div><strong>{int(red.get('affected_files', 0) or 0)}</strong>영향 파일</div>"
+            f"<div><strong>{int(blue.get('patches_generated', 0) or 0)}</strong>Blue Team 패치</div>"
+            f"<div><strong>{int(blue.get('patches_verified', 0) or 0)}</strong>검증 통과</div>"
+            "</div>"
+            "<table><thead><tr>"
+            "<th>before</th><th>after</th><th>고침</th>"
+            "<th>남음</th><th>도입</th><th>위험 감소율</th>"
+            "</tr></thead><tbody><tr>"
+            f"<td>{int(cmp_.get('before_total', 0) or 0)}</td>"
+            f"<td>{int(cmp_.get('after_total', 0) or 0)}</td>"
+            f"<td>{int(cmp_.get('fixed_count', 0) or 0)}</td>"
+            f"<td>{int(cmp_.get('remaining_count', 0) or 0)}</td>"
+            f"<td>{int(cmp_.get('introduced_count', 0) or 0)}</td>"
+            f"<td>{html.escape(str(cmp_.get('risk_reduction_percent', 0.0)))}%</td>"
+            "</tr></tbody></table>"
+            "<h3>공격 경로</h3>"
+            + (
+                "<table><thead><tr><th>ID</th><th>제목</th><th>CWE</th>"
+                "<th>위치</th><th>공격 경로</th><th>상태</th>"
+                "<th>방어</th><th>잔여 위험</th></tr></thead><tbody>"
+                + "".join(path_rows)
+                + "</tbody></table>"
+                if path_rows
+                else '<p class="muted">표시할 공격 경로가 없습니다.</p>'
+            )
+        )
+
+    def _md_red_blue_block(self, vulns: list, patches: list) -> list[str]:
+        if not vulns and not patches:
+            return []
+        summary = build_red_blue_summary(
+            list(vulns), list(patches), include_attack_paths=True
+        )
+        red = summary.get("red_team", {}) or {}
+        blue = summary.get("blue_team", {}) or {}
+        cmp_ = summary.get("comparison", {}) or {}
+        paths = summary.get("attack_paths", []) or []
+        safe = self._md_inline_safe
+
+        out: list[str] = ["## Red/Blue 보안 관점", ""]
+        out.append("### Red Team")
+        out.append(
+            f"- 탐지: **{int(red.get('total_findings', 0) or 0)}** · "
+            f"HIGH/CRITICAL: **{int(red.get('critical_or_high', 0) or 0)}** · "
+            f"고유 CWE: **{int(red.get('unique_cwe', 0) or 0)}** · "
+            f"영향 파일: **{int(red.get('affected_files', 0) or 0)}**"
+        )
+        out.append("")
+        out.append("### Blue Team")
+        out.append(
+            f"- 생성: **{int(blue.get('patches_generated', 0) or 0)}** · "
+            f"검증: **{int(blue.get('patches_verified', 0) or 0)}** · "
+            f"리뷰 필요: **{int(blue.get('patches_needing_review', 0) or 0)}**"
+        )
+        out.append("")
+        out.append("### 위험 비교")
+        out.append(
+            f"- before: **{int(cmp_.get('before_total', 0) or 0)}** → "
+            f"after: **{int(cmp_.get('after_total', 0) or 0)}** "
+            f"(고침: **{int(cmp_.get('fixed_count', 0) or 0)}**, "
+            f"남음: **{int(cmp_.get('remaining_count', 0) or 0)}**, "
+            f"도입: **{int(cmp_.get('introduced_count', 0) or 0)}**)"
+        )
+        out.append(
+            f"- 위험 감소율: **{cmp_.get('risk_reduction_percent', 0.0)}%**"
+        )
+        out.append("")
+        out.append("### 공격 경로")
+        out.append("")
+        if not paths:
+            out.append("_표시할 공격 경로가 없습니다._")
+            out.append("")
+            return out
+        out.append("| ID | 제목 | CWE | 위치 | 공격 경로 | 상태 | 방어 | 잔여 위험 |")
+        out.append("|---|---|---|---|---|---|---|---|")
+        for row in paths:
+            row = row or {}
+            file_loc = f"{safe(row.get('file_path', ''))}:{safe(row.get('line_number', ''))}"
+            out.append(
+                f"| {safe(row.get('finding_id', ''))} "
+                f"| {safe(row.get('title', ''))} "
+                f"| {safe(row.get('cwe_id') or '-')} "
+                f"| {file_loc} "
+                f"| {safe(row.get('attack_path', ''))} "
+                f"| {safe(row.get('status', ''))} "
+                f"| {safe(row.get('defense', ''))} "
+                f"| {safe(row.get('residual_risk', ''))} |"
+            )
+        out.append("")
+        return out
