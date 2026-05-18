@@ -8,6 +8,7 @@ import AnalyzeView from './components/AnalyzeView'
 import HistoryView from './components/HistoryView'
 import DependencyView from './components/DependencyView'
 import ReportView from './components/ReportView'
+import RedBlueView from './components/RedBlueView'
 import LoginView from './components/LoginView'
 import { apiFetch, isAuthenticated, clearApiKey } from './api/client'
 
@@ -101,6 +102,7 @@ export default function App() {
     { id: 'deps',      num: '05', cmd: 'deps',     ko: '의존성' },
     { id: 'report',    num: '06', cmd: 'report',   ko: '리포트' },
     { id: 'history',   num: '07', cmd: 'log',      ko: '이력' },
+    { id: 'redblue',   num: '08', cmd: 'redblue',  ko: '공방' },
   ]
 
   const status = error ? 'OFFLINE' : loading ? 'BOOTING' : 'READY'
@@ -238,6 +240,7 @@ export default function App() {
                 {tab === 'deps' && <DependencyView />}
                 {tab === 'report' && <ReportView />}
                 {tab === 'history' && <HistoryView />}
+                {tab === 'redblue' && <RedBlueView />}
                 </div>
               </>
             )
