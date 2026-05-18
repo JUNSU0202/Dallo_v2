@@ -162,18 +162,19 @@ class ReportGenerator:
     def generate_markdown(self, data: dict, deps_data: Optional[dict] = None) -> str:
         data = data or {}
         s = _summary(data)
+        code = self._md_code_span_safe
         lines: list[str] = []
         lines.append("# Dallo 보안 분석 리포트")
         lines.append("")
-        lines.append(f"- 세션: `{_g(data, 'session_id', '(미상)')}`")
+        lines.append(f"- 세션: `{code(_g(data, 'session_id', '(미상)'))}`")
         if _g(data, "repo"):
-            lines.append(f"- 레포: `{_g(data, 'repo')}`")
+            lines.append(f"- 레포: `{code(_g(data, 'repo'))}`")
         if _g(data, "pr_number") not in ("", None):
-            lines.append(f"- PR: `{_g(data, 'pr_number')}`")
+            lines.append(f"- PR: `{code(_g(data, 'pr_number'))}`")
         if _g(data, "branch"):
-            lines.append(f"- 브랜치: `{_g(data, 'branch')}`")
+            lines.append(f"- 브랜치: `{code(_g(data, 'branch'))}`")
         if _g(data, "commit_sha"):
-            lines.append(f"- 커밋: `{_g(data, 'commit_sha')}`")
+            lines.append(f"- 커밋: `{code(_g(data, 'commit_sha'))}`")
         lines.append(f"- 생성: `{datetime.now().isoformat(timespec='seconds')}`")
         lines.append("")
         lines.append("## 요약")
@@ -334,18 +335,23 @@ class ReportGenerator:
         cwe = _g(v, "cwe_id", "")
         cwe_link = _cwe_link(cwe)
         sev = str(_g(v, "severity", "")).upper() or "-"
+        text = self._md_text_safe
+        code = self._md_code_span_safe
         out = [
-            f"### `{_g(v, 'id', '')}` — {_g(v, 'title', '')}",
+            f"### `{code(_g(v, 'id', ''))}` — {text(_g(v, 'title', ''))}",
             "",
             f"- 심각도: **{sev}**",
-            f"- 도구/규칙: `{_g(v, 'tool', '')}` / `{_g(v, 'rule_id', '')}`",
-            f"- 위치: `{_g(v, 'file_path', '')}:{_g(v, 'line_number', '')}`",
+            f"- 도구/규칙: `{code(_g(v, 'tool', ''))}` / `{code(_g(v, 'rule_id', ''))}`",
+            f"- 위치: `{code(_g(v, 'file_path', ''))}:{code(_g(v, 'line_number', ''))}`",
         ]
         if cwe:
-            out.append(f"- CWE: [{cwe}]({cwe_link})" if cwe_link else f"- CWE: {cwe}")
+            cwe_safe = text(cwe)
+            out.append(
+                f"- CWE: [{cwe_safe}]({cwe_link})" if cwe_link else f"- CWE: {cwe_safe}"
+            )
         desc = str(_g(v, "description", "")).strip()
         if desc:
-            out.append(f"- 설명: {desc}")
+            out.append(f"- 설명: {text(desc)}")
         snippet = str(_g(v, "code_snippet", ""))
         if snippet:
             out.append("")
@@ -357,11 +363,13 @@ class ReportGenerator:
 
     def _md_patch_block(self, p: dict) -> list[str]:
         p = p or {}
+        text = self._md_text_safe
+        code = self._md_code_span_safe
         out = [
-            f"### 수정안 → `{_g(p, 'vulnerability_id', '')}`",
+            f"### 수정안 → `{code(_g(p, 'vulnerability_id', ''))}`",
             "",
-            f"- 유형: `{_g(p, 'fix_type', '')}`",
-            f"- 상태: `{_g(p, 'status', '')}`",
+            f"- 유형: `{code(_g(p, 'fix_type', ''))}`",
+            f"- 상태: `{code(_g(p, 'status', ''))}`",
         ]
         sec = _g(p, "security_revalidation", None)
         if isinstance(sec, dict):
@@ -369,7 +377,7 @@ class ReportGenerator:
             out.append(f"- 보안 재검증: {'통과' if ok else '실패'}")
         explanation = str(_g(p, "explanation", "")).strip()
         if explanation:
-            out.append(f"- 설명: {explanation}")
+            out.append(f"- 설명: {text(explanation)}")
         fixed_code = str(_g(p, "fixed_code", ""))
         if fixed_code:
             out.append("")
@@ -383,6 +391,8 @@ class ReportGenerator:
         results = deps_data.get("results") or []
         if not results:
             return []
+        text = self._md_text_safe
+        code = self._md_code_span_safe
         out = ["## 의존성 취약점", ""]
         any_vuln = False
         for r in results:
@@ -391,11 +401,11 @@ class ReportGenerator:
                 any_vuln = True
                 vuln = vuln or {}
                 out.append(
-                    f"- `{vuln.get('package', '')}` "
-                    f"({vuln.get('installed_version', '')} → "
-                    f"{vuln.get('fixed_version', '')}) "
-                    f"— {vuln.get('severity', '')} "
-                    f"`{vuln.get('vulnerability_id', '')}`"
+                    f"- `{code(vuln.get('package', ''))}` "
+                    f"({text(vuln.get('installed_version', ''))} → "
+                    f"{text(vuln.get('fixed_version', ''))}) "
+                    f"— {text(vuln.get('severity', ''))} "
+                    f"`{code(vuln.get('vulnerability_id', ''))}`"
                 )
         if not any_vuln:
             out.append("_탐지된 의존성 취약점이 없습니다._")
@@ -408,19 +418,43 @@ class ReportGenerator:
         return text.replace("```", "''`")
 
     @staticmethod
-    def _md_inline_safe(text: Any) -> str:
-        """Markdown 인라인/테이블 셀에 사용할 사용자 문자열을 안전 치환.
+    def _md_text_safe(text: Any) -> str:
+        """일반 Markdown 인라인/리스트 텍스트용 사용자 문자열 안전 치환.
 
-        - 파이프(``|``)는 ``\\|`` 로 이스케이프하여 테이블을 깨지 않음.
-        - 개행은 공백으로 평탄화.
-        - 백틱 3연속(```````)은 ``````+안전치환
-          으로 바꿔 새 코드 펜스 생성을 차단.
+        - ``None`` → ``""``.
+        - CR/LF → 공백 평탄화 (필드 안 개행으로 새 헤딩/리스트/펜스가
+          생기는 것을 차단).
+        - ``html.escape(quote=False)`` 로 raw HTML 무력화 (Markdown 렌더러는
+          paragraph/list 본문 안 raw HTML 을 그대로 통과시킨다).
+        - 사용자 입력의 ```` ``` ```` 는 ZWSP 를 끼워 새 코드 펜스를 만들지
+          못하게 한다.
         """
         s = "" if text is None else str(text)
         s = s.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        s = html.escape(s, quote=False)
         s = s.replace("```", "``​`")
-        s = s.replace("|", "\\|")
         return s
+
+    @staticmethod
+    def _md_code_span_safe(text: Any) -> str:
+        """``` `value` ``` 인라인 코드 스팬 안에 들어갈 사용자 문자열 안전 치환.
+
+        ``_md_text_safe`` 동작 + 모든 단일 백틱을 작은따옴표로 치환하여
+        스팬이 사용자 입력에 의해 닫히고 그 뒤에 임의 Markdown 이
+        주입되는 것을 막는다.
+        """
+        s = ReportGenerator._md_text_safe(text)
+        return s.replace("`", "'")
+
+    @staticmethod
+    def _md_inline_safe(text: Any) -> str:
+        """Markdown 표 셀용 사용자 문자열 안전 치환.
+
+        ``_md_text_safe`` + 파이프(``|`` → ``\\|``) 이스케이프로 표 구조가
+        깨지지 않게 한다.
+        """
+        s = ReportGenerator._md_text_safe(text)
+        return s.replace("|", "\\|")
 
     # ------------------------------------------------------------
     # Red/Blue 섹션 헬퍼 (Wave 5-J)
