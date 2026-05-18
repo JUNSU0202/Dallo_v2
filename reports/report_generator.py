@@ -334,9 +334,9 @@ class ReportGenerator:
         v = v or {}
         cwe = _g(v, "cwe_id", "")
         cwe_link = _cwe_link(cwe)
-        sev = str(_g(v, "severity", "")).upper() or "-"
         text = self._md_text_safe
         code = self._md_code_span_safe
+        sev = text(str(_g(v, "severity", "")).upper() or "-")
         out = [
             f"### `{code(_g(v, 'id', ''))}` — {text(_g(v, 'title', ''))}",
             "",

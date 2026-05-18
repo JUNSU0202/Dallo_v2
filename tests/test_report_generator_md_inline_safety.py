@@ -199,6 +199,62 @@ def test_markdown_dependency_block_neutralizes_user_html_and_backticks():
 
 
 # ---------------------------------------------------------------------------
+# 3b) 취약점 severity 필드 inline 안전성 (Wave 5-K 보강)
+# ---------------------------------------------------------------------------
+
+
+def test_markdown_vuln_severity_is_escaped_against_html_and_heading_injection():
+    """취약점 severity 가 ``**{sev}**`` 로 렌더되면서 사용자 입력을 그대로
+    흘려보내선 안 된다. ``str(...).upper()`` 만으로는 raw HTML/H2 헤딩/펜스
+    주입이 차단되지 않으므로 ``_md_text_safe`` 를 거쳐야 한다.
+    """
+    data = {
+        "summary": {
+            "total": 1, "high": 1, "medium": 0, "low": 0,
+            "patches_generated": 0, "patches_verified": 0,
+        },
+        "vulnerabilities": [
+            {
+                "id": "v1",
+                "tool": "bandit",
+                "rule_id": "B608",
+                "severity": (
+                    "<script>alert(1)</script>\n"
+                    "## injected-severity\n"
+                    "```bad"
+                ),
+                "title": "t",
+                "description": "d",
+                "file_path": "a.py",
+                "line_number": 1,
+                "cwe_id": "CWE-89",
+            }
+        ],
+    }
+    md = ReportGenerator().generate_markdown(data)
+    body_outside_code = _strip_bare_fenced_blocks(md)
+
+    # raw <script>/</script> (any casing — severity is .upper()-ed) must not
+    # appear outside fenced code blocks.
+    assert "<script>" not in body_outside_code
+    assert "</script>" not in body_outside_code
+    assert "<SCRIPT>" not in body_outside_code
+    assert "</SCRIPT>" not in body_outside_code
+
+    # severity 의 \n 이 새 H2 헤딩을 만들면 안 된다.
+    assert "\n## injected-severity" not in md
+    assert "\n## INJECTED-SEVERITY" not in md
+
+    # severity 의 ``` 이 새 fenced block 을 열어선 안 된다.
+    assert "\n```bad" not in md
+    assert "\n```BAD" not in md
+
+    # 무력화된 severity 가 어떤 형태로든 본문에 남아 있어야 한다
+    # (html.escape 결과 또는 ZWSP 가 끼워진 백틱).
+    assert ("&lt;SCRIPT&gt;" in md) or ("&lt;script&gt;" in md)
+
+
+# ---------------------------------------------------------------------------
 # 4) 정상 동작 보존: 빈 입력 fallback / 코드 블록 안전성
 # ---------------------------------------------------------------------------
 
