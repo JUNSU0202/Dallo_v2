@@ -173,13 +173,15 @@ class TestDetectAndRunPythonUsesLocalYamlMultiConfig:
         assert len(configs) == 2
 
         # merge_results 가 호출되어 결과가 합쳐졌는지 marker 로 확인.
+        # Wave 5-L: heuristic fallback 활성화 후 .py 경로는 Bandit + Semgrep +
+        # heuristic 세 결과를 merge 한다.
         assert result.tool == "merged"
-        assert result.raw_output == {"merged_count": 2,
-                                     "tools": ["bandit", "semgrep"]}
+        assert result.raw_output == {"merged_count": 3,
+                                     "tools": ["bandit", "semgrep", "heuristic"]}
 
 
 class TestDetectAndRunNonPythonUsesLocalYamlMultiConfig:
-    def test_js_target_runs_semgrep_only_with_auto_plus_local_yaml(
+    def test_js_target_runs_semgrep_with_auto_plus_local_yaml_and_heuristic(
         self, patched_runners, tmp_path
     ):
         js_target = str(tmp_path / "sample.js")
@@ -203,9 +205,11 @@ class TestDetectAndRunNonPythonUsesLocalYamlMultiConfig:
         assert local_yaml in configs
         assert len(configs) == 2
 
-        # JS 경로는 merge 를 거치지 않고 Semgrep 결과를 그대로 반환.
-        assert result.tool == "semgrep"
-        assert result.target_path == js_target
+        # Wave 5-L: 비-Python 경로도 heuristic fallback 을 merge 한다.
+        # merge_results 가 호출되어 결과가 합쳐졌는지 marker 로 확인.
+        assert result.tool == "merged"
+        assert result.raw_output == {"merged_count": 2,
+                                     "tools": ["semgrep", "heuristic"]}
 
 
 class TestDetectAndRunUnsupportedFileUnchanged:

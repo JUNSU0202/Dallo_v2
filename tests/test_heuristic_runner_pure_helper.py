@@ -18,9 +18,11 @@ production 호출자 0건(caller 0) — tests 만 import 한다.
    매치된 경우에만 finding 을 만들고, invalid regex 가 섞이면 fail-closed 다.
 6. any-mode 룰에서 invalid regex 패턴은 조용히 스킵된다 (다른 패턴은 계속).
 7. caller-owned 룰 list / 룰 dict / `patterns` list 는 mutate 되지 않는다.
-8. `heuristic_runner` 는 production 경로 (`analyzer/quick_scan.py`,
-   `analyzer/pipeline.py`, `analyzer/semgrep_runner.py`, `api/`, `agent/`,
-   `validator/`, `db/`, `dashboard/`) 어디에서도 import 되지 않는다 (caller 0).
+8. `heuristic_runner` 는 Wave 5-L 활성화 슬롯(`analyzer/semgrep_runner.py`) 을
+   제외한 production 경로 (`analyzer/quick_scan.py`, `analyzer/pipeline.py`,
+   `api/`, `agent/`, `validator/`, `db/`, `dashboard/`) 어디에서도 import 되지
+   않는다. Wave 5-L 가 `detect_and_run` 안에서만 의도적으로 caller 를 1로
+   올렸으며, 다른 모든 모듈은 여전히 순수 helper 의 caller 가 아니다.
 9. `analyzer/heuristic_runner.py` 소스에 금지 패턴 (open(/os.walk/subprocess/
    requests/time./datetime/FastAPI/api.server/DALLO_/os.environ/eval(/exec(/
    pickle.loads/shell=True) 가 등장하지 않는다.
@@ -298,10 +300,12 @@ def test_default_quick_scan_rules_are_not_mutated_after_scan():
 # Test 8 — caller 0: production 경로 어디에서도 import 되지 않는다.
 # ============================================================
 
+# Wave 5-L: ``analyzer/semgrep_runner.py`` 는 ``detect_and_run`` 안에서 heuristic
+# fallback 을 활성화한다 — 의도적인 단일 caller. 나머지 production 경로는 본
+# wave 가 손대지 않으며, heuristic helper 를 참조하지 않는다.
 _PRODUCTION_GUARD_FILES = (
     "analyzer/quick_scan.py",
     "analyzer/pipeline.py",
-    "analyzer/semgrep_runner.py",
 )
 _PRODUCTION_GUARD_ROOTS = ("api", "agent", "validator", "db", "dashboard")
 
@@ -311,7 +315,8 @@ def test_heuristic_runner_not_imported_in_analyzer_core_modules():
         path = _REPO_ROOT / relpath
         text = path.read_text(encoding="utf-8")
         assert "heuristic_runner" not in text, (
-            f"{relpath} 가 heuristic_runner 를 참조한다 (caller 0 위반)"
+            f"{relpath} 가 heuristic_runner 를 참조한다 "
+            "(quick_scan / pipeline 은 Wave 5-L 활성화 슬롯이 아니다)"
         )
 
 

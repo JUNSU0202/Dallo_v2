@@ -281,13 +281,79 @@ def _detect_and_run_semgrep_configs() -> tuple[str, ...]:
     return ("auto", _DALLO_LOCAL_SEMGREP_YAML)
 
 
-def detect_and_run(target_path: str) -> AnalysisResult:
+def _run_heuristic_fallback(
+    target_path: str,
+    *,
+    file_io: Optional[FileIO] = None,
+) -> AnalysisResult:
+    """Wave 5-L: 순수 heuristic 헬퍼를 ``detect_and_run`` 경로에서 활성화한다.
+
+    Wave 5-H3 의 ``analyzer.heuristic_runner.scan_text`` 는 외부 I/O / 네트워크
+    의존 없는 순수 정규식 스캐너다. 본 헬퍼는 그 출력을 ``Vulnerability`` 로
+    재포장해 ``AnalysisResult(tool="heuristic", ...)`` 로 노출한다.
+
+    설계 원칙:
+
+    - 파일 텍스트는 오직 ``analyzer.file_io.FileIO.read_text_lines`` 어댑터로만
+      읽는다 (직접 ``open()`` / ``subprocess`` 호출 없음). 테스트는 ``file_io``
+      keyword-only 인자로 fake 어댑터를 주입한다.
+    - 파일 read / 디코딩 예외는 fail-closed 로 swallow 한다 — heuristic 만
+      0건이 되고, Bandit / Semgrep 결과는 호출자(``detect_and_run``) 가
+      그대로 merge 한다.
+    - 언어 식별은 ``analyzer.quick_scan.detect_language`` 시맨틱을 따른다.
+      ``.ts`` / ``.tsx`` 는 quick_scan 의 javascript 룰셋으로 매핑되므로,
+      Semgrep 의 ``typescript`` 라벨과 의도적으로 분리된다.
+    """
+    from analyzer import heuristic_runner
+    from analyzer.quick_scan import detect_language
+
+    result = AnalysisResult(tool="heuristic", target_path=target_path)
+    try:
+        io = file_io or get_default_file_io()
+        text = "".join(io.read_text_lines(target_path))
+    except Exception:
+        return result
+
+    language = detect_language(target_path)
+    findings = heuristic_runner.scan_text(text, language)
+
+    for finding in findings:
+        severity = finding.get("severity", "MEDIUM")
+        result.vulnerabilities.append(
+            Vulnerability(
+                tool="heuristic",
+                rule_id=finding.get("rule_id", ""),
+                severity=severity,
+                confidence="MEDIUM",
+                title=finding.get("title", ""),
+                description=finding.get("message", ""),
+                file_path=target_path,
+                line_number=finding.get("line", 0),
+                code_snippet=finding.get("code", ""),
+                cwe_id=finding.get("cwe"),
+            )
+        )
+        if severity == "HIGH":
+            result.high_count += 1
+        elif severity == "MEDIUM":
+            result.medium_count += 1
+        else:
+            result.low_count += 1
+    result.total_issues = len(result.vulnerabilities)
+    return result
+
+
+def detect_and_run(
+    target_path: str,
+    *,
+    file_io: Optional[FileIO] = None,
+) -> AnalysisResult:
     """파일 확장자를 감지하고 적절한 분석기를 실행합니다."""
     ext = os.path.splitext(target_path)[1].lower()
     semgrep_configs = _detect_and_run_semgrep_configs()
 
     if ext == ".py":
-        # Python: Bandit + Semgrep 병합
+        # Python: Bandit + Semgrep + heuristic 병합
         from analyzer.bandit_runner import BanditRunner
         from analyzer.result_parser import merge_results
 
@@ -297,12 +363,20 @@ def detect_and_run(target_path: str) -> AnalysisResult:
         semgrep = SemgrepRunner(config=semgrep_configs)
         semgrep_result = semgrep.run(target_path)
 
-        return merge_results(bandit_result, semgrep_result)
+        heuristic_result = _run_heuristic_fallback(target_path, file_io=file_io)
+
+        return merge_results(bandit_result, semgrep_result, heuristic_result)
 
     elif ext in EXTENSION_MAP:
-        # 기타 언어: Semgrep만
-        runner = SemgrepRunner(config=semgrep_configs)
-        return runner.run(target_path)
+        # 기타 지원 언어: Semgrep + heuristic 병합
+        from analyzer.result_parser import merge_results
+
+        semgrep = SemgrepRunner(config=semgrep_configs)
+        semgrep_result = semgrep.run(target_path)
+
+        heuristic_result = _run_heuristic_fallback(target_path, file_io=file_io)
+
+        return merge_results(semgrep_result, heuristic_result)
 
     else:
         return AnalysisResult(
