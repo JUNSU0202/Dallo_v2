@@ -140,6 +140,10 @@ class AnalyzeRequest(BaseModel):
     # Wave 5-F: optional LLM 입력 최적화. ``None`` 이면 pre-Wave-5-F 동작 보존
     # (필터/cap 미적용). 명시적으로 ``{}`` 가 들어오면 default config 가 적용된다.
     llm_optimization: Optional[LLMOptimizationRequest] = None
+    # Wave 5-M: optional 사용자 추가 지시. ``None`` 이면 LLM 프롬프트에 사용자
+    # 섹션이 첨부되지 않아 pre-Wave-5-M 동작이 보존된다. 길이는 보수적으로
+    # 2000 자로 제한하여 토큰 폭주/주입 표면을 좁힌다.
+    user_prompt: Optional[str] = Field(default=None, max_length=2000)
 
 
 def _run_analysis(
@@ -151,6 +155,7 @@ def _run_analysis(
     model: str,
     multi_patch: bool = False,
     llm_optimization=None,
+    user_prompt: Optional[str] = None,
 ):
     """백그라운드 분석 실행 — 서비스 ``execute_analysis_job`` 으로 위임한다.
 
@@ -160,14 +165,28 @@ def _run_analysis(
 
     Wave 5-F: ``llm_optimization`` 은 ``LLMOptimizationRequest`` 인스턴스 또는
     None 이며, 서비스 → 파이프라인까지 그대로 전파된다.
+
+    Wave 5-M: ``user_prompt`` 는 선택적 문자열 (또는 None) 로 서비스 →
+    파이프라인 → LLM agent 까지 그대로 전파된다. 미지정 시 None 이 전달돼
+    pre-Wave-5-M 동작을 보존한다. ``None`` 일 때는 inner call 에서 kwarg
+    자체를 생략하여, pre-Wave-5-M 시그니처의 monkeypatch 더블 (e.g.
+    ``user_prompt`` 를 모르는 fake ``execute_analysis_job``) 과의 호환을
+    유지한다. 값이 실제로 제공되면 그대로 forwarding 된다.
     """
-    _pipeline_service.execute_analysis_job(
-        jobs=analysis_jobs,
-        job_id=job_id, code=code, filename=filename,
-        use_llm=use_llm, provider=provider, model=model,
-        multi_patch=multi_patch,
-        llm_optimization=llm_optimization,
-    )
+    forward_kwargs: dict = {
+        "jobs": analysis_jobs,
+        "job_id": job_id,
+        "code": code,
+        "filename": filename,
+        "use_llm": use_llm,
+        "provider": provider,
+        "model": model,
+        "multi_patch": multi_patch,
+        "llm_optimization": llm_optimization,
+    }
+    if user_prompt is not None:
+        forward_kwargs["user_prompt"] = user_prompt
+    _pipeline_service.execute_analysis_job(**forward_kwargs)
 
 
 @router.post(
@@ -197,6 +216,7 @@ def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
             use_llm=req.use_llm, provider=req.provider,
             model=req.model, multi_patch=req.multi_patch,
             llm_optimization=optimization_payload,
+            user_prompt=req.user_prompt,
         )
         return {
             "job_id": task.id,
@@ -229,6 +249,7 @@ def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
         model=req.model,
         multi_patch=req.multi_patch,
         llm_optimization=req.llm_optimization,
+        user_prompt=req.user_prompt,
     )
 
     return {
@@ -328,6 +349,7 @@ async def analyze_file(file: UploadFile = File(...), use_llm: bool = Form(True))
             "model": req.model,
             "multi_patch": False,
             "llm_optimization": None,
+            "user_prompt": None,
         },
     )
     t.start()

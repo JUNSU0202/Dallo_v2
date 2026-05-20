@@ -95,6 +95,7 @@ def execute_analysis_job(
     model: str,
     multi_patch: bool = False,
     llm_optimization=None,
+    user_prompt: Optional[str] = None,
 ) -> None:
     """분석 파이프라인을 실행하고 ``jobs[job_id]`` 상태를 갱신한다.
 
@@ -117,12 +118,24 @@ def execute_analysis_job(
         jobs[job_id]["step"] = step
 
     try:
-        result = execute_pipeline(
-            job_id=job_id, code=code, filename=filename,
-            use_llm=use_llm, provider=provider, model=model,
-            multi_patch=multi_patch, on_progress=on_progress,
-            llm_optimization=llm_optimization,
-        )
+        # Wave 5-M: ``user_prompt`` 가 None 이면 kwarg 자체를 생략한다 —
+        # pre-Wave-5-M 시그니처를 가진 fake ``execute_pipeline`` 더블과의
+        # 호환을 유지하기 위한 조건부 forwarding. 값이 제공된 경우에만
+        # 명시 kwarg 로 전달돼 그대로 파이프라인까지 흐른다.
+        pipeline_kwargs: dict = {
+            "job_id": job_id,
+            "code": code,
+            "filename": filename,
+            "use_llm": use_llm,
+            "provider": provider,
+            "model": model,
+            "multi_patch": multi_patch,
+            "on_progress": on_progress,
+            "llm_optimization": llm_optimization,
+        }
+        if user_prompt is not None:
+            pipeline_kwargs["user_prompt"] = user_prompt
+        result = execute_pipeline(**pipeline_kwargs)
 
         jobs[job_id]["language"] = result.language
         if result.llm_error:

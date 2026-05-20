@@ -44,6 +44,7 @@ def execute_pipeline(
     clock: Optional[Callable[[], float]] = None,
     file_io=None,
     llm_optimization=None,
+    user_prompt: Optional[str] = None,
 ) -> PipelineResult:
     """
     분석 파이프라인을 실행합니다.
@@ -64,6 +65,12 @@ def execute_pipeline(
             ``None`` 이면 ``analyzer.file_io.get_default_file_io()`` 가 lazy
             로 사용된다 — 운영 동작 무변경. 더블 주입 시 ``write_text(path,
             content)`` 만 호출되며 실제 디스크 쓰기는 어댑터에 위임된다.
+        user_prompt: 사용자 추가 지시 (Wave 5-M).
+            ``None`` 이면 LLM 프롬프트에 사용자 섹션이 추가되지 않아
+            pre-Wave-5-M 동작이 그대로 보존된다. 지정 시 DalloAgent
+            생성자로 전달되어 ``_build_prompt`` / ``_build_multi_prompt``
+            가 명시적으로 구분된 섹션 (낮은 우선순위) 으로 첨부한다.
+            API 계층에서 길이 제한 (max_length=2000) 이 검증된다.
         llm_optimization: LLM 입력 최적화 정책 (Wave 5-F).
             ``None`` 이면 dedup 결과 ``llm_targets`` 가 그대로
             ``_generate_patches`` 에 전달되어 pre-Wave-5-F 동작이 보존된다.
@@ -137,8 +144,16 @@ def execute_pipeline(
             _progress(
                 f"AI 수정안 생성 중... ({len(optimized_targets)}/{len(vuln_reports)}건)"
             )
+            # Wave 5-M: ``user_prompt`` 가 None 이면 kwarg 자체를 생략 —
+            # pre-Wave-5-M 시그니처의 fake ``_generate_patches`` 더블과의
+            # 호환을 유지하기 위한 조건부 forwarding. 값이 제공된 경우에만
+            # 그대로 DalloAgent 생성자까지 흐른다.
+            generate_kwargs: dict = {}
+            if user_prompt is not None:
+                generate_kwargs["user_prompt"] = user_prompt
             patches, llm_error = _generate_patches(
                 optimized_targets, provider, model, multi_patch,
+                **generate_kwargs,
             )
             pipeline_result.llm_error = llm_error
 
@@ -286,12 +301,18 @@ def _apply_llm_optimization(llm_targets: list, opt) -> tuple[list, dict]:
 
 
 def _generate_patches(
-    llm_targets: list, provider: str, model: str, multi_patch: bool
+    llm_targets: list, provider: str, model: str, multi_patch: bool,
+    *, user_prompt: Optional[str] = None,
 ) -> tuple[list, str | None]:
-    """LLM 수정안을 생성합니다. (에러 시 빈 리스트 + 에러 메시지 반환)"""
+    """LLM 수정안을 생성합니다. (에러 시 빈 리스트 + 에러 메시지 반환)
+
+    Wave 5-M: ``user_prompt`` 가 지정되면 ``DalloAgent`` 생성자로 전달되어
+    패치 프롬프트의 명시적으로 구분된 (낮은 우선순위) 섹션에 첨부된다.
+    ``None`` 이면 pre-Wave-5-M 동작이 보존된다.
+    """
     try:
         from agent.llm_agent import DalloAgent
-        agent = DalloAgent(provider=provider, model=model)
+        agent = DalloAgent(provider=provider, model=model, user_prompt=user_prompt)
         patches = agent.generate_patches(llm_targets, multi=multi_patch)
         return patches, None
     except Exception as e:
