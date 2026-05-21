@@ -313,6 +313,100 @@ class TestRouterImportSurface:
 
 
 # ============================================================
+# Wave 5-N — llm_audit_when_clean plumbing (API → service → Celery)
+# ============================================================
+
+
+class TestAnalyzeRequestLLMAuditWhenClean:
+    """``AnalyzeRequest`` 가 ``llm_audit_when_clean: bool = False`` 를
+    optional 로 받아들이고, 미지정 시 default 가 ``False`` 여야 한다.
+    """
+
+    def test_omitted_llm_audit_when_clean_defaults_to_false(self):
+        req = analyze_router.AnalyzeRequest(code="x=1", filename="x.py")
+        assert req.llm_audit_when_clean is False
+
+    def test_explicit_true_accepted(self):
+        req = analyze_router.AnalyzeRequest(
+            code="x=1", filename="x.py", llm_audit_when_clean=True,
+        )
+        assert req.llm_audit_when_clean is True
+
+    def test_explicit_false_accepted(self):
+        req = analyze_router.AnalyzeRequest(
+            code="x=1", filename="x.py", llm_audit_when_clean=False,
+        )
+        assert req.llm_audit_when_clean is False
+
+
+class TestMemoryFallbackForwardsAuditFlag:
+    """메모리 폴백 라우터가 ``_run_analysis`` 에 ``llm_audit_when_clean`` 을
+    그대로 forwarding 하는지 검증한다.
+    """
+
+    def test_memory_dispatch_forwards_true(self, monkeypatch):
+        captured: list[dict] = []
+
+        def _spy(*args, **kwargs):
+            captured.append({"args": args, "kwargs": kwargs})
+
+        monkeypatch.setattr(analyze_router, "_USE_CELERY", False)
+        monkeypatch.setattr(analyze_router, "_run_analysis", _spy)
+        monkeypatch.setattr(analyze_router, "analysis_jobs", {})
+
+        payload = {
+            "code": "x=1\n", "filename": "x.py", "use_llm": False,
+            "llm_audit_when_clean": True,
+        }
+        r = client.post("/api/analyze", json=payload, headers=_AUTH_HEADERS)
+        assert r.status_code == 200, r.text
+        assert len(captured) == 1
+        call = captured[0]
+        assert call["args"] == ()
+        assert call["kwargs"].get("llm_audit_when_clean") is True
+
+    def test_memory_dispatch_defaults_false_when_omitted(self, monkeypatch):
+        captured: list[dict] = []
+
+        def _spy(*args, **kwargs):
+            captured.append({"args": args, "kwargs": kwargs})
+
+        monkeypatch.setattr(analyze_router, "_USE_CELERY", False)
+        monkeypatch.setattr(analyze_router, "_run_analysis", _spy)
+        monkeypatch.setattr(analyze_router, "analysis_jobs", {})
+
+        r = client.post(
+            "/api/analyze",
+            json={"code": "x=1\n", "filename": "x.py", "use_llm": False},
+            headers=_AUTH_HEADERS,
+        )
+        assert r.status_code == 200, r.text
+        assert len(captured) == 1
+        kw = captured[0]["kwargs"]
+        # omit 시 키 부재 또는 ``False`` 모두 허용 — dict/True 가 새지 않아야 한다
+        forwarded = kw.get("llm_audit_when_clean", False)
+        assert forwarded is False, (
+            f"omit 시 llm_audit_when_clean 이 False 가 아님: {forwarded!r}"
+        )
+
+    def test_memory_dispatch_does_not_break_existing_fakes(self, monkeypatch):
+        """기존 monkeypatch ``_run_analysis`` 더블 (kwargs 미반영) 이 그대로
+        호출되어 메모리 폴백 응답이 200 OK 를 반환해야 한다.
+        """
+        monkeypatch.setattr(analyze_router, "_USE_CELERY", False)
+        monkeypatch.setattr(analyze_router, "_run_analysis", lambda *a, **kw: None)
+        monkeypatch.setattr(analyze_router, "analysis_jobs", {})
+
+        r = client.post(
+            "/api/analyze",
+            json={"code": "x=1\n", "filename": "x.py", "use_llm": False},
+            headers=_AUTH_HEADERS,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["backend"] == "memory"
+
+
+# ============================================================
 # Wave 3-D — analysis_jobs 메모리 폴백 정리 위임
 # ============================================================
 

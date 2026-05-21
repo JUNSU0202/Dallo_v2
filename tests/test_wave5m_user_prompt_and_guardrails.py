@@ -808,7 +808,7 @@ class TestDefaultsAndBannedTokens:
         assert sig.parameters["provider"].default == "gemini"
         assert sig.parameters["model"].default == "gemini-2.0-flash-lite"
 
-    def test_no_gateway_or_claude_sonnet_or_audit_when_clean_tokens(self):
+    def test_no_gateway_or_claude_sonnet_tokens(self):
         targets = [
             "api/routers/analyze.py",
             "api/services/analysis_pipeline.py",
@@ -821,7 +821,6 @@ class TestDefaultsAndBannedTokens:
             "gateway",
             "claude-sonnet",
             "LLM_PRIMARY_PROVIDER",
-            "llm_audit_when_clean",
         ]
         for rel in targets:
             text = (repo_root / rel).read_text(encoding="utf-8")

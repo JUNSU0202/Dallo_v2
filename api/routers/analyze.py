@@ -144,6 +144,11 @@ class AnalyzeRequest(BaseModel):
     # 섹션이 첨부되지 않아 pre-Wave-5-M 동작이 보존된다. 길이는 보수적으로
     # 2000 자로 제한하여 토큰 폭주/주입 표면을 좁힌다.
     user_prompt: Optional[str] = Field(default=None, max_length=2000)
+    # Wave 5-N: 정적 분석이 clean 일 때 LLM audit fallback 활성화 여부.
+    # ``False`` (default) 이면 pre-Wave-5-N 동작이 보존되어 audit fallback 이
+    # 일어나지 않는다. API → 서비스 → Celery → 파이프라인까지 단순 bool 로
+    # forwarding 만 한다 (본 파일은 plumbing 만, audit 본체 거동은 별도 wave).
+    llm_audit_when_clean: bool = False
 
 
 def _run_analysis(
@@ -156,6 +161,7 @@ def _run_analysis(
     multi_patch: bool = False,
     llm_optimization=None,
     user_prompt: Optional[str] = None,
+    llm_audit_when_clean: bool = False,
 ):
     """백그라운드 분석 실행 — 서비스 ``execute_analysis_job`` 으로 위임한다.
 
@@ -172,6 +178,11 @@ def _run_analysis(
     자체를 생략하여, pre-Wave-5-M 시그니처의 monkeypatch 더블 (e.g.
     ``user_prompt`` 를 모르는 fake ``execute_analysis_job``) 과의 호환을
     유지한다. 값이 실제로 제공되면 그대로 forwarding 된다.
+
+    Wave 5-N: ``llm_audit_when_clean`` 은 bool plumbing 만 담당한다.
+    ``False`` (default) 이면 inner call kwarg 에서 생략되어 pre-Wave-5-N
+    시그니처를 가진 fake ``execute_analysis_job`` 더블과의 호환을 유지하고,
+    ``True`` 일 때만 명시 kwarg 로 서비스에 전달된다.
     """
     forward_kwargs: dict = {
         "jobs": analysis_jobs,
@@ -186,6 +197,8 @@ def _run_analysis(
     }
     if user_prompt is not None:
         forward_kwargs["user_prompt"] = user_prompt
+    if llm_audit_when_clean:
+        forward_kwargs["llm_audit_when_clean"] = True
     _pipeline_service.execute_analysis_job(**forward_kwargs)
 
 
@@ -217,6 +230,7 @@ def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
             model=req.model, multi_patch=req.multi_patch,
             llm_optimization=optimization_payload,
             user_prompt=req.user_prompt,
+            llm_audit_when_clean=req.llm_audit_when_clean,
         )
         return {
             "job_id": task.id,
@@ -250,6 +264,7 @@ def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
         multi_patch=req.multi_patch,
         llm_optimization=req.llm_optimization,
         user_prompt=req.user_prompt,
+        llm_audit_when_clean=req.llm_audit_when_clean,
     )
 
     return {
@@ -350,6 +365,7 @@ async def analyze_file(file: UploadFile = File(...), use_llm: bool = Form(True))
             "multi_patch": False,
             "llm_optimization": None,
             "user_prompt": None,
+            "llm_audit_when_clean": False,
         },
     )
     t.start()

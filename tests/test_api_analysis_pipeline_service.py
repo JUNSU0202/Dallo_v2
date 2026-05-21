@@ -511,3 +511,88 @@ class TestRouterDelegatesToService:
         assert "ReportGenerator()" not in src, (
             "라우터에 ReportGenerator() 인스턴스화가 남아 있다 — 서비스 미위임"
         )
+
+
+# ============================================================
+# Wave 5-N — llm_audit_when_clean plumbing (service → pipeline)
+# ============================================================
+
+
+class TestServiceForwardsAuditWhenCleanToPipeline:
+    """``execute_analysis_job`` 이 ``execute_pipeline`` 에 ``llm_audit_when_clean``
+    을 그대로 전달하는지 검증. 기존 monkeypatch 표면은 그대로 유지된다.
+    """
+
+    def test_service_forwards_llm_audit_when_clean_true(
+        self, isolated_reports_dir, fake_pipeline, fake_report_gen,
+    ):
+        from api.services.analysis_pipeline import execute_analysis_job
+
+        captured_calls, _ = fake_pipeline
+        jobs = {"j1": {"job_id": "j1", "status": "queued", "step": "..."}}
+
+        execute_analysis_job(
+            jobs=jobs, job_id="j1", code="x=1\n", filename="x.py",
+            use_llm=True, provider="gemini", model="gemini-2.0-flash-lite",
+            multi_patch=False, llm_audit_when_clean=True,
+        )
+
+        assert len(captured_calls) == 1
+        kw = captured_calls[0]
+        assert kw.get("llm_audit_when_clean") is True, (
+            f"execute_analysis_job 이 llm_audit_when_clean=True 를 forwarding "
+            f"하지 않음: {kw}"
+        )
+
+    def test_service_default_llm_audit_when_clean_is_false(
+        self, isolated_reports_dir, fake_pipeline, fake_report_gen,
+    ):
+        """``llm_audit_when_clean`` 미지정 시 ``execute_pipeline`` 에
+        ``False`` 가 전달되거나 키 자체가 부재하여 기존 동작이 보존되어야 한다.
+        """
+        from api.services.analysis_pipeline import execute_analysis_job
+
+        captured_calls, _ = fake_pipeline
+        jobs = {"j1": {"job_id": "j1", "status": "queued", "step": "..."}}
+
+        execute_analysis_job(
+            jobs=jobs, job_id="j1", code="x=1\n", filename="x.py",
+            use_llm=True, provider="gemini", model="gemini-2.0-flash-lite",
+        )
+
+        assert len(captured_calls) == 1
+        kw = captured_calls[0]
+        # 미지정 시 ``False`` 또는 키 부재 — dict/True 가 새면 안 된다
+        forwarded = kw.get("llm_audit_when_clean", False)
+        assert forwarded is False, (
+            f"omit 시 execute_pipeline 에 False 가 아닌 값 전달: {forwarded!r}"
+        )
+
+
+class TestRouterForwardsAuditWhenCleanToService:
+    """라우터의 ``_run_analysis`` 가 ``llm_audit_when_clean`` 을 서비스로
+    forwarding 하는지 검증.
+    """
+
+    def test_run_analysis_forwards_audit_when_clean_true(
+        self, isolated_reports_dir, monkeypatch,
+    ):
+        import api.routers.analyze as router_mod
+        from api.services import analysis_pipeline as svc
+
+        captured: list[dict] = []
+
+        def _fake_execute(**kwargs):
+            captured.append(kwargs)
+
+        monkeypatch.setattr(svc, "execute_analysis_job", _fake_execute)
+        monkeypatch.setattr(router_mod, "analysis_jobs", {"jX": {}})
+
+        router_mod._run_analysis(
+            job_id="jX", code="c", filename="x.py", use_llm=True,
+            provider="gemini", model="gemini-2.0-flash-lite",
+            multi_patch=False, llm_audit_when_clean=True,
+        )
+
+        assert len(captured) == 1
+        assert captured[0].get("llm_audit_when_clean") is True

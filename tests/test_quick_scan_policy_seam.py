@@ -234,3 +234,186 @@ def test_match_mode_all_fails_closed_on_invalid_regex(monkeypatch):
         "finding 을 만들지 않아야 한다 (fail-closed). "
         f"got {findings}"
     )
+
+
+# ============================================================
+# Test 8 — Wave 5-N: match_mode="all_file" — 파일 전역 all-pattern 매칭
+# ============================================================
+#
+# 배경:
+#   AUTH-BYPASS 같은 일부 룰은 세 가지 마커 (예: @RequestParam, verifyAccount,
+#   setValue("account-verified-id", ...)) 가 *같은 라인* 에는 절대 나타나지
+#   않고 함수/메서드 안에 흩어져 있다. 따라서 ``match_mode="all"`` (동일 라인)
+#   로는 결코 매치되지 않는다. 파일 전역에서 모두 발견되어야 finding 을
+#   만드는 정책 옵트인이 필요하다.
+#
+#   기존 ``match_mode="all"`` 의 fail-closed / 언어 필터 / finding shape 는
+#   그대로 보존되어야 한다.
+#
+
+def test_match_mode_all_file_requires_every_pattern_anywhere_in_file(monkeypatch):
+    rule = _custom_rule(
+        id="QS-TEST-ALL-FILE",
+        patterns=[r"alpha", r"beta", r"gamma"],
+        match_mode="all_file",
+    )
+    _install_rules(monkeypatch, [rule])
+
+    # 세 마커가 서로 다른 라인에 모두 존재 → finding 1 건.
+    code = (
+        "line 1 has alpha\n"
+        "line 2 unrelated\n"
+        "line 3 has beta\n"
+        "line 4 unrelated\n"
+        "line 5 has gamma\n"
+    )
+    findings = quick_scan_module.scan(code, "python")
+    assert len(findings) == 1, (
+        f"all_file: 세 패턴이 파일 전역에 모두 있을 때 finding 1 건이어야 한다, "
+        f"got {findings}"
+    )
+    f = findings[0]
+    assert f["rule_id"] == "QS-TEST-ALL-FILE"
+    assert _FINDING_KEYS <= set(f.keys())
+    # 라인 / 코드는 매치된 첫 패턴 위치로 보고된다 (안정적인 단일 라인 앵커).
+    assert isinstance(f["line"], int) and f["line"] >= 1
+
+
+def test_match_mode_all_file_no_finding_when_one_pattern_missing(monkeypatch):
+    rule = _custom_rule(
+        id="QS-TEST-ALL-FILE-MISS",
+        patterns=[r"alpha", r"beta", r"gamma"],
+        match_mode="all_file",
+    )
+    _install_rules(monkeypatch, [rule])
+
+    # gamma 가 누락 → finding 없음.
+    code = (
+        "alpha is here\n"
+        "beta is here\n"
+        "no third marker present\n"
+    )
+    findings = quick_scan_module.scan(code, "python")
+    assert findings == [], (
+        f"all_file: 패턴 중 하나라도 누락이면 finding 이 없어야 한다, got {findings}"
+    )
+
+
+def test_match_mode_all_file_at_most_one_finding_per_rule(monkeypatch):
+    """파일 전역 룰은 라인이 여러 번 매치되어도 finding 을 한 건만 만든다."""
+    rule = _custom_rule(
+        id="QS-TEST-ALL-FILE-ONCE",
+        patterns=[r"alpha", r"beta"],
+        match_mode="all_file",
+    )
+    _install_rules(monkeypatch, [rule])
+
+    code = (
+        "alpha occurs\n"
+        "alpha occurs again\n"
+        "beta occurs\n"
+        "beta occurs again\n"
+    )
+    findings = quick_scan_module.scan(code, "python")
+    assert len(findings) == 1, (
+        f"all_file: 룰당 정확히 1 건의 finding 이 보고되어야 한다, got {findings}"
+    )
+
+
+def test_match_mode_all_file_fails_closed_on_invalid_regex(monkeypatch):
+    rule = _custom_rule(
+        id="QS-TEST-ALL-FILE-BROKEN",
+        patterns=[r"alpha", r"("],
+        match_mode="all_file",
+    )
+    _install_rules(monkeypatch, [rule])
+    code = "alpha is here\nalpha again\n"
+    findings = quick_scan_module.scan(code, "python")
+    assert findings == [], (
+        "all_file: invalid regex 가 하나라도 있으면 fail-closed 여야 한다"
+    )
+
+
+def test_match_mode_all_file_respects_language_filter(monkeypatch):
+    rule = _custom_rule(
+        id="QS-TEST-ALL-FILE-JAVA",
+        patterns=[r"alpha", r"beta"],
+        match_mode="all_file",
+        languages=["java"],
+    )
+    _install_rules(monkeypatch, [rule])
+
+    code = "alpha here\nbeta here\n"
+    # python 호출 → finding 없음 (java 전용 룰).
+    assert quick_scan_module.scan(code, "python") == []
+    # java 호출 → finding 1 건.
+    findings = quick_scan_module.scan(code, "java")
+    assert len(findings) == 1
+
+
+# ============================================================
+# Test 9 — Wave 5-N: WebGoat-like AUTH-BYPASS Java production rule
+# ============================================================
+#
+# 배경 (recipe §4.6, §10):
+#   Java WebGoat VerifyAccount.java 형태의 코드 — ``@RequestParam String
+#   userId`` + ``verifyAccount(Integer.valueOf(userId))`` + ``setValue(
+#   "account-verified-id", userId)`` — 세 마커가 모두 등장하면 사용자 제어
+#   계정 ID 기반 인증 우회로 분류한다. 세 마커 중 하나라도 빠지면 false
+#   positive 차단을 위해 finding 을 생성하지 않는다.
+#
+
+def test_quick_scan_auth_bypass_user_controlled_id_full_match():
+    """모든 마커가 등장하는 WebGoat 스니펫은 finding 을 생성한다."""
+    code = """
+    @PostMapping(path = "/auth-bypass/verify-account")
+    public ResponseEntity verify(@RequestParam String userId) {
+        if (verifyAccount(Integer.valueOf(userId))) {
+            userSessionData.setValue("account-verified-id", userId);
+            return success;
+        }
+        return failed;
+    }
+    """
+    findings = quick_scan_module.scan(code, "java")
+    auth = [f for f in findings if f["rule_id"] == "QS-AUTH-BYPASS-USER-CONTROLLED-ID"]
+    assert auth, (
+        "WebGoat VerifyAccount-like 스니펫이 QS-AUTH-BYPASS-USER-CONTROLLED-ID "
+        f"finding 을 생성해야 한다, got {findings}"
+    )
+    f = auth[0]
+    assert _FINDING_KEYS <= set(f.keys())
+    assert f["cwe"] == "CWE-288"
+    assert f["severity"] in ("HIGH", "MEDIUM", "LOW")
+
+
+def test_quick_scan_auth_bypass_user_controlled_id_missing_one_marker():
+    """``setValue`` 마커가 빠지면 false positive 방지로 finding 없음."""
+    code = """
+    @PostMapping(path = "/auth-bypass/verify-account")
+    public ResponseEntity verify(@RequestParam String userId) {
+        if (verifyAccount(Integer.valueOf(userId))) {
+            return success;
+        }
+        return failed;
+    }
+    """
+    findings = quick_scan_module.scan(code, "java")
+    auth = [f for f in findings if f["rule_id"] == "QS-AUTH-BYPASS-USER-CONTROLLED-ID"]
+    assert auth == [], (
+        "setValue 마커 누락 시 finding 을 만들면 안 된다, got {findings}"
+    )
+
+
+def test_quick_scan_auth_bypass_user_controlled_id_python_not_triggered():
+    """Java 전용 룰이므로 동일 코드라도 python 으로 호출하면 finding 없음."""
+    code = """
+    @RequestParam String userId
+    verifyAccount(Integer.valueOf(userId))
+    setValue("account-verified-id", userId)
+    """
+    findings = quick_scan_module.scan(code, "python")
+    auth = [f for f in findings if f["rule_id"] == "QS-AUTH-BYPASS-USER-CONTROLLED-ID"]
+    assert auth == [], (
+        "Python 언어 호출에서는 java-only AUTH-BYPASS 룰이 발화되면 안 된다"
+    )
