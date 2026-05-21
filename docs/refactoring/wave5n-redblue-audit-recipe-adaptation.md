@@ -1,7 +1,7 @@
 # Wave 5-N Red/Blue Audit Recipe Adaptation
 
 > 본 문서는 **Wave 5-N** 의 합리화 노트(rationale note)다. 본 wave 는 `/home/ubuntu/dallo_redblue_audit_recipe.md` 의 audit recipe 와 Gusle01 커밋 `f005625` / `e474680` 의 **기능 의도(feature intent)** 만 Dallo_v2 의 클린 아키텍처(라우터 / 서비스 / 도메인 / 어댑터 / seam) 위에서 다시 구현(backport-by-rewrite)한 결과를 기록한다.
-> 본 wave 는 머지 / 푸시 / 배포 / 리셋 / 워크트리 삭제를 수행하지 않는다. 본 문서는 코드 변경이 끝난 뒤의 **읽기 전용 합리화 기록** 이다.
+> 본 wave 는 *구현·검증 단계에서는* 머지 / 푸시 / 배포 / 리셋 / 워크트리 삭제를 수행하지 않는다. 본 문서는 그 단계의 **읽기 전용 합리화 기록** 이다. (사용자의 명시적 승인 이후 수행된 원격 출하 기록은 §6 — Post-delivery — 참고.)
 
 ---
 
@@ -48,7 +48,7 @@
 - **Gusle01 gateway 디폴트 / 프로바이더 백포트 미채택** — `agent/providers/gateway_provider.py` 도입, `provider_factory` 활성화, `AnalyzeRequest` 의 `provider` / `model` 디폴트 변경(`"gateway"` / `"claude-sonnet-4-6"`) 은 Wave 5-A §6-1 의 Hard Reject 정책 그대로 본 wave 에서도 채택하지 않는다. Gemini / Google AI Studio 기본 경로가 유지된다.
 - **`api/server.py` 모놀리스 변경 없음** — 본 wave 는 server.py 의 라인을 추가/수정하지 않는다. 모든 변경은 `api/routers/analyze.py` / `api/services/analysis_pipeline.py` / `api/tasks.py` / `analyzer/pipeline.py` / `agent/llm_agent.py` / `shared/red_blue.py` / `analyzer/quick_scan.py` / `analyzer/heuristic_runner.py` 로 한정되며, 라우터/서비스 분리(Wave 2-B ~ 4-Z) 가 그대로 보존된다.
 - **`shared/schemas.py` 무변경** — Wave 5-A §6-2 / §10 의 “스키마 변경은 별도 명시 승인 후에만” 정책 그대로. `llm_audit_when_clean` 옵션과 승격된 finding 은 모두 기존 응답 contract 안에서 처리된다.
-- **푸시 / 배포 / 워크트리 삭제 없음** — 본 wave 는 로컬 브랜치 `w5n-redblue-audit-recipe` 위에서만 작업하며, `git push` / 배포 파이프라인 / `git worktree remove` / `git reset --hard` / `git clean -f` / 원격 브랜치 / PR 생성 모두 수행하지 않는다.
+- **구현 / 검증 단계의 푸시 / 배포 / 워크트리 삭제 없음** — 본 wave 는 *구현·검증 단계*에서 로컬 브랜치 `w5n-redblue-audit-recipe` 위에서만 작업하며, 그 단계에서는 `git push` / 배포 파이프라인 / `git worktree remove` / `git reset --hard` / `git clean -f` / 원격 브랜치 / PR 생성 모두 수행하지 않는다. (사용자 승인 이후 `dallo_v2/main` 으로의 원격 출하는 §6 참고.)
 
 ---
 
@@ -73,7 +73,24 @@
 
 ## 5. Rollback 지침 (Rollback)
 
-- 본 wave 의 변경이 아직 단일 머지 커밋으로 통합되기 전이라면, 로컬 브랜치 `w5n-redblue-audit-recipe` 를 그대로 **포기(abandon)** 하는 것으로 롤백이 끝난다. 원격으로 푸시된 적이 없고 머지된 적도 없으므로 운영 영향은 0 이다.
-- 머지 커밋이 만들어진 뒤 회귀가 필요해지면, `git revert <merge_commit>`(머지 커밋의 경우 `git revert -m 1 <merge_commit>`) 으로 단일 커밋 revert 한다. 본 wave 의 변경은 모두 옵트인(`llm_audit_when_clean=False` 디폴트) 이고, 응답 contract / 스키마는 무변경이므로 revert 의 운영 caller 영향 또한 0 이다.
+- *구현·검증 단계 (머지·푸시 이전):* 본 wave 의 변경이 아직 단일 머지 커밋으로 통합되기 전이라면, 로컬 브랜치 `w5n-redblue-audit-recipe` 를 그대로 **포기(abandon)** 하는 것으로 롤백이 끝난다. 이 단계에서는 원격으로 푸시된 적이 없고 머지된 적도 없으므로 운영 영향은 0 이다. (본 시점 이후의 사실은 §6 참고.)
+- *머지 이후:* 머지 커밋이 만들어진 뒤 회귀가 필요해지면, `git revert -m 1 <merge_commit>` 으로 단일 커밋 revert 한다. Wave 5-N 의 단일 머지 커밋은 `95988ce` (`merge: integrate Wave 5-N red blue audit workflow`) 이므로, 본 wave 의 머지/출하 롤백은 `git revert -m 1 95988ce` 로 표현된다. 본 wave 의 변경은 모두 옵트인(`llm_audit_when_clean=False` 디폴트) 이고, 응답 contract / 스키마는 무변경이므로 revert 의 운영 caller 영향 또한 0 이다.
+
+---
+
+## 6. 출하 기록 (Post-delivery — user-approved push to Dallo_v2)
+
+본 절은 §1~§5 의 코드 변경 / 검증이 끝난 뒤, **사용자의 명시적 승인** 을 거쳐 수행된 원격 출하 사실을 기록한다. §1~§5 에 등장하는 "푸시 / 배포 / 워크트리 삭제 없음" 표현은 *구현·검증 단계 (implementation-before-delivery)* 에 한정된 서술이며, 본 절은 그 단계 이후의 상태 변화를 정확히 남기는 것을 목적으로 한다.
+
+- **승인 시점 / 절차**: 사용자가 Wave 5-N 의 결과를 `JUNSU0202/Dallo_v2` 로 푸시하는 것을 명시적으로 승인했다. 본 출하는 그 승인 범위 안에서만 수행됐고, 그 외 추가 원격 / 추가 브랜치 / 배포 파이프라인 트리거는 수행하지 않았다.
+- **출하 명령**: `git push dallo_v2 main:main` — 성공.
+- **로컬 / 원격 동기 상태**: 푸시 직후 원격 `dallo_v2/main` 이 로컬 `main` 과 동일 커밋 `95988ceb9932521b6707c43f7aa51b0859ba619c` 에 위치함을 확인했다.
+- **출하 커밋 (short)**: `95988ce` — `merge: integrate Wave 5-N red blue audit workflow` (Wave 5-N 단일 머지 커밋).
+- **CI / check-run 상태 (푸시 직후 조회)**: GitHub status query 결과 status state = `pending`, `total_statuses=0`, check-runs `total_count=0`. 이는 *등록된 검사 자체가 0 건* 임을 의미하며 **실패가 아니다**. 본 시점에 등록된 CI 가 없으므로 §4 의 로컬 / Hermes 검증 그린이 출하 시점의 유효한 품질 기록으로 남는다.
+- **원격 롤백 명령**: 본 출하의 머지 커밋을 단일 명령으로 되돌리려면 다음을 사용한다.
+  ```
+  git revert -m 1 95988ce
+  ```
+  Wave 5-N 의 모든 변경은 옵트인(`llm_audit_when_clean=False` 디폴트) 이고 응답 contract / 스키마는 무변경이므로, 본 revert 의 caller 영향은 0 이다. 원격에 revert 커밋을 반영하려면 동일 원격으로 `git push dallo_v2 main:main` 을 다시 수행한다.
 
 — Wave 5-N 종료.
