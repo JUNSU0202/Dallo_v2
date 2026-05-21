@@ -96,6 +96,7 @@ def execute_analysis_job(
     multi_patch: bool = False,
     llm_optimization=None,
     user_prompt: Optional[str] = None,
+    llm_audit_when_clean: bool = False,
 ) -> None:
     """분석 파이프라인을 실행하고 ``jobs[job_id]`` 상태를 갱신한다.
 
@@ -135,6 +136,11 @@ def execute_analysis_job(
         }
         if user_prompt is not None:
             pipeline_kwargs["user_prompt"] = user_prompt
+        # Wave 5-N: ``llm_audit_when_clean`` 은 ``True`` 일 때만 명시 kwarg 로
+        # 전달한다 — pre-Wave-5-N 시그니처의 fake ``execute_pipeline`` 더블과의
+        # 호환을 유지하기 위한 조건부 forwarding.
+        if llm_audit_when_clean:
+            pipeline_kwargs["llm_audit_when_clean"] = True
         result = execute_pipeline(**pipeline_kwargs)
 
         jobs[job_id]["language"] = result.language

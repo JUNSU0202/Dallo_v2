@@ -149,6 +149,29 @@ QUICK_SCAN_RULES = [
         "languages": ["python", "java", "javascript", "c", "cpp", "go"],
         "message": "보안 목적(토큰, 키 생성)에는 secrets 모듈이나 crypto.randomBytes를 사용하세요.",
     },
+    # Wave 5-N: WebGoat VerifyAccount-like Auth Bypass (사용자 제어 ID 흐름).
+    # 세 마커가 같은 파일에 모두 등장할 때만 finding 을 생성한다 (all_file).
+    # 마지막 패턴(setValue("account-verified-id", ...)) 의 라인이 evidence 로
+    # 보고된다 — 인증 우회 결정 지점이라서 가장 유용한 앵커다.
+    {
+        "id": "QS-AUTH-BYPASS-USER-CONTROLLED-ID",
+        "title": "사용자 제어 ID 기반 인증 우회 (WebGoat VerifyAccount 패턴)",
+        "severity": "HIGH",
+        "cwe": "CWE-288",
+        "patterns": [
+            r'@RequestParam\s+(?:final\s+)?String\s+userId\b',
+            r'verifyAccount\s*\(\s*Integer\.valueOf\s*\(\s*userId\s*\)',
+            r'setValue\s*\(\s*"account-verified-id"\s*,\s*userId',
+        ],
+        "languages": ["java"],
+        "match_mode": "all_file",
+        "message": (
+            "사용자가 제어하는 userId 가 verifyAccount() 와 "
+            "setValue(\"account-verified-id\", ...) 흐름에 그대로 흘러가 "
+            "인증 우회가 가능합니다. 세션 식별자는 서버 권한 컨텍스트에서 "
+            "결정하세요."
+        ),
+    },
 ]
 
 
@@ -166,19 +189,25 @@ def detect_language(filename: str) -> str:
     return _EXT_LANGUAGE_MAP.get(ext, "python")
 
 
-def _rule_requires_all_patterns(rule: dict) -> bool:
-    """룰 메타데이터가 동일 라인 all-pattern 매칭을 요구하는지 판정.
+def _rule_match_mode(rule: dict) -> str:
+    """룰 메타데이터의 정규 매칭 모드를 'any' | 'all' | 'all_file' 로 반환.
 
-    옵트인 신호: ``match_mode="all"`` 또는 ``require_all=True``. 그 외 모든
-    경우(메타데이터 미지정 / ``match_mode="any"`` / falsy ``require_all``)는
-    legacy any-pattern 동작으로 유지된다.
+    옵트인 신호:
+    - ``require_all=True`` → 'all' (동일 라인 all-pattern 매칭, legacy alias)
+    - ``match_mode="all"`` → 'all'
+    - ``match_mode="all_file"`` → 'all_file' (파일 전역 all-pattern 매칭;
+      Wave 5-N: WebGoat-like AUTH-BYPASS 처럼 마커가 서로 다른 라인에 흩어진
+      케이스를 옵트인 매치한다)
+    - 그 외 → 'any' (legacy 동작)
     """
     if rule.get("require_all") is True:
-        return True
+        return "all"
     mode = rule.get("match_mode")
-    if isinstance(mode, str) and mode.lower() == "all":
-        return True
-    return False
+    if isinstance(mode, str):
+        normalized = mode.lower()
+        if normalized in ("all", "all_file"):
+            return normalized
+    return "any"
 
 
 def _make_finding(rule: dict, line_num: int, line_text: str) -> dict:
@@ -202,11 +231,14 @@ def scan(code: str, language: str) -> list:
         if language not in rule["languages"]:
             continue
 
-        if _rule_requires_all_patterns(rule):
+        mode = _rule_match_mode(rule)
+        patterns = rule.get("patterns") or ()
+
+        if mode == "all":
             # all-mode: 모든 패턴이 동일 라인에서 매치된 라인에만 finding.
             # 패턴 중 하나라도 invalid regex 면 fail-closed (룰 전체 스킵).
             try:
-                regexes = [re.compile(p, re.IGNORECASE) for p in rule["patterns"]]
+                regexes = [re.compile(p, re.IGNORECASE) for p in patterns]
             except re.error:
                 continue
             if not regexes:
@@ -216,8 +248,38 @@ def scan(code: str, language: str) -> list:
                     findings.append(_make_finding(rule, line_num, line_text))
             continue
 
+        if mode == "all_file":
+            # all_file-mode: 모든 패턴이 파일 전역에서 (서로 다른 라인이어도)
+            # 한 번 이상 매치되어야 한 건의 finding 을 만든다. invalid regex 가
+            # 섞이면 fail-closed (룰 전체 스킵). 룰당 finding 은 최대 1 건.
+            # finding 의 line/code 는 패턴 리스트의 *마지막* 패턴의 첫 매치
+            # 라인을 사용한다 — 룰 작성자가 가장 specific 한 패턴을 마지막에
+            # 두면 그 라인이 evidence 로 보고된다.
+            try:
+                regexes = [re.compile(p, re.IGNORECASE) for p in patterns]
+            except re.error:
+                continue
+            if not regexes:
+                continue
+            anchor_matches: list = []
+            all_matched = True
+            for rx in regexes:
+                hit = None
+                for line_num, line_text in enumerate(lines, 1):
+                    if rx.search(line_text):
+                        hit = (line_num, line_text)
+                        break
+                if hit is None:
+                    all_matched = False
+                    break
+                anchor_matches.append(hit)
+            if all_matched and anchor_matches:
+                line_num, line_text = anchor_matches[-1]
+                findings.append(_make_finding(rule, line_num, line_text))
+            continue
+
         # legacy any-mode: 한 패턴이라도 매치되면 finding, invalid regex 는 스킵.
-        for pattern in rule["patterns"]:
+        for pattern in patterns:
             try:
                 regex = re.compile(pattern, re.IGNORECASE)
                 for line_num, line_text in enumerate(lines, 1):

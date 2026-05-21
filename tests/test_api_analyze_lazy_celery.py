@@ -365,3 +365,146 @@ class TestImportTimeStateIsLazy:
         assert last == "None", (
             f"fresh import 직후 _USE_CELERY 가 미초기화(None) 가 아니다: {last}"
         )
+
+
+# ============================================================
+# Wave 5-N — llm_audit_when_clean plumbing (Celery delay)
+# ============================================================
+
+
+class TestCeleryDelayForwardsAuditWhenClean:
+    """Celery 경로에서 ``run_analysis_task.delay(...)`` 가
+    ``llm_audit_when_clean`` 을 받는지 검증. Redis/Celery 미사용 — 가짜 task.
+    """
+
+    def _enable_fake_celery(self, monkeypatch, fake_task):
+        import api.routers.analyze as mod
+        monkeypatch.setattr(mod, "_USE_CELERY", True, raising=False)
+        monkeypatch.setattr(mod, "_celery", object(), raising=False)
+        monkeypatch.setattr(mod, "run_analysis_task", fake_task, raising=False)
+        monkeypatch.setattr(mod, "_ensure_celery_initialized", lambda: True)
+        monkeypatch.setattr(mod, "analysis_jobs", {})
+        from api.server import app
+        return TestClient(app)
+
+    def test_delay_receives_audit_when_clean_true(self, monkeypatch):
+        fake = _FakeTask()
+        client = self._enable_fake_celery(monkeypatch, fake)
+
+        payload = {
+            "code": "x=1\n", "filename": "x.py", "use_llm": True,
+            "llm_audit_when_clean": True,
+        }
+        r = client.post("/api/analyze", json=payload, headers=_AUTH_HEADERS)
+        assert r.status_code == 200, r.text
+        assert len(fake.calls) == 1
+        kw = fake.calls[0]
+        assert kw.get("llm_audit_when_clean") is True
+
+    def test_delay_defaults_false_when_omitted(self, monkeypatch):
+        fake = _FakeTask()
+        client = self._enable_fake_celery(monkeypatch, fake)
+
+        r = client.post(
+            "/api/analyze",
+            json={"code": "x=1\n", "filename": "x.py", "use_llm": True},
+            headers=_AUTH_HEADERS,
+        )
+        assert r.status_code == 200
+        assert len(fake.calls) == 1
+        kw = fake.calls[0]
+        # 키 부재 또는 ``False`` 모두 허용
+        assert kw.get("llm_audit_when_clean", False) is False
+
+
+class TestCeleryTaskForwardsAuditWhenCleanToPipeline:
+    """``api.tasks.run_analysis_task`` 본체가 ``execute_pipeline`` 으로
+    ``llm_audit_when_clean`` 을 forwarding 하는지 검증. brokerless.
+    """
+
+    def test_task_body_forwards_audit_when_clean(self, monkeypatch):
+        from api import tasks as tasks_mod
+
+        captured_kwargs: list[dict] = []
+
+        class _FakePipelineResult:
+            def __init__(self):
+                self.result_data = {"session_id": "fake"}
+                self.language = "python"
+                self.llm_error = None
+                self.db_error = None
+
+        def _fake_execute_pipeline(*args, **kwargs):
+            captured_kwargs.append(kwargs)
+            return _FakePipelineResult()
+
+        import analyzer.pipeline as pipeline_mod
+        monkeypatch.setattr(
+            pipeline_mod, "execute_pipeline", _fake_execute_pipeline,
+        )
+
+        class _FakeRequest:
+            id = "task-id-w5n"
+
+        class _FakeSelf:
+            request = _FakeRequest()
+
+            def update_state(self, **kw):
+                pass
+
+        task_obj = tasks_mod.run_analysis_task
+        raw_fn = task_obj.run.__func__
+        raw_fn(
+            _FakeSelf(),
+            code="x=1\n", filename="x.py", use_llm=True,
+            provider="gemini", model="gemini-2.0-flash-lite",
+            multi_patch=False, llm_audit_when_clean=True,
+        )
+
+        assert len(captured_kwargs) == 1
+        kw = captured_kwargs[0]
+        assert kw.get("llm_audit_when_clean") is True
+
+    def test_task_body_default_audit_when_clean_is_false(self, monkeypatch):
+        from api import tasks as tasks_mod
+
+        captured_kwargs: list[dict] = []
+
+        class _FakePipelineResult:
+            def __init__(self):
+                self.result_data = {"session_id": "fake"}
+                self.language = "python"
+                self.llm_error = None
+                self.db_error = None
+
+        def _fake_execute_pipeline(*args, **kwargs):
+            captured_kwargs.append(kwargs)
+            return _FakePipelineResult()
+
+        import analyzer.pipeline as pipeline_mod
+        monkeypatch.setattr(
+            pipeline_mod, "execute_pipeline", _fake_execute_pipeline,
+        )
+
+        class _FakeRequest:
+            id = "task-id-w5n-2"
+
+        class _FakeSelf:
+            request = _FakeRequest()
+
+            def update_state(self, **kw):
+                pass
+
+        task_obj = tasks_mod.run_analysis_task
+        raw_fn = task_obj.run.__func__
+        # llm_audit_when_clean 미지정 — default False
+        raw_fn(
+            _FakeSelf(),
+            code="x=1\n", filename="x.py", use_llm=True,
+            provider="gemini", model="gemini-2.0-flash-lite",
+            multi_patch=False,
+        )
+
+        assert len(captured_kwargs) == 1
+        kw = captured_kwargs[0]
+        assert kw.get("llm_audit_when_clean", False) is False

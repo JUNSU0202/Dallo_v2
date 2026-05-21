@@ -17,7 +17,8 @@ from api.celery_app import celery_app
 def run_analysis_task(self, code: str, filename: str, use_llm: bool = True,
                       provider: str = "gemini", model: str = "gemini-2.0-flash-lite",
                       multi_patch: bool = False, llm_optimization=None,
-                      user_prompt: str | None = None):
+                      user_prompt: str | None = None,
+                      llm_audit_when_clean: bool = False):
     """
     Celery task: 분석 파이프라인 실행
 
@@ -58,6 +59,11 @@ def run_analysis_task(self, code: str, filename: str, use_llm: bool = True,
         }
         if user_prompt is not None:
             pipeline_kwargs["user_prompt"] = user_prompt
+        # Wave 5-N: ``llm_audit_when_clean`` 은 ``True`` 일 때만 명시 kwarg 로
+        # 전달한다 — pre-Wave-5-N 시그니처의 fake ``execute_pipeline`` 더블과의
+        # 호환을 유지하기 위한 조건부 forwarding.
+        if llm_audit_when_clean:
+            pipeline_kwargs["llm_audit_when_clean"] = True
         result = execute_pipeline(**pipeline_kwargs)
 
         return {

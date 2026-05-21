@@ -45,6 +45,7 @@ def execute_pipeline(
     file_io=None,
     llm_optimization=None,
     user_prompt: Optional[str] = None,
+    llm_audit_when_clean: bool = False,
 ) -> PipelineResult:
     """
     분석 파이프라인을 실행합니다.
@@ -157,6 +158,57 @@ def execute_pipeline(
             )
             pipeline_result.llm_error = llm_error
 
+        # Step 5.5 (Wave 5-N): 정적 분석이 clean 일 때 LLM clean-audit fallback.
+        # 활성 조건: ``use_llm`` + ``llm_audit_when_clean`` + 정적 vuln 0건.
+        # audit dict 는 result 에 부착되고, finding 들은 ``llm_audit_`` prefix
+        # 의 합성 ``VulnerabilityReport`` 로 변환되어 위험도 산정 → (옵션)
+        # 최적화 → ``_generate_patches`` 로 흐른다. audit 호출이 실패하면
+        # ``llm_error`` 만 채우고 파이프라인은 정상 종료한다 (zero-vuln 셰이프).
+        audit_result_dict = None
+        audit_optimization_summary = None
+        if (
+            use_llm
+            and llm_audit_when_clean
+            and len(vuln_reports) == 0
+        ):
+            _progress("LLM 감사 분석 중...")
+            audit_dict, audit_err = _generate_clean_audit(
+                code, filename, lang, provider, model,
+            )
+            if audit_err is not None:
+                pipeline_result.llm_error = audit_err
+            else:
+                audit_result_dict = audit_dict
+                audit_vulns = _audit_findings_to_vulnerabilities(
+                    audit_dict, filename, lang, source_code=code,
+                )
+                if audit_vulns:
+                    _score_risk(audit_vulns)
+                    # audit findings 는 patch 대상 여부와 무관하게
+                    # ``vulnerabilities`` 에 노출되어야 한다 — optimization 이
+                    # 0건으로 좁혀도 ``llm_audit.findings`` 와 셰이프가 어긋나면
+                    # 안 됨.
+                    vuln_reports = list(vuln_reports) + audit_vulns
+                    if llm_optimization is not None:
+                        audit_targets, audit_optimization_summary = (
+                            _apply_llm_optimization(
+                                audit_vulns, llm_optimization,
+                            )
+                        )
+                    else:
+                        audit_targets = audit_vulns
+
+                    if audit_targets:
+                        audit_kwargs: dict = {}
+                        if user_prompt is not None:
+                            audit_kwargs["user_prompt"] = user_prompt
+                        audit_patches, audit_llm_err = _generate_patches(
+                            audit_targets, provider, model, multi_patch,
+                            **audit_kwargs,
+                        )
+                        pipeline_result.llm_error = audit_llm_err
+                        patches = list(patches) + audit_patches
+
         # Step 6: 코드 검증
         if patches:
             _progress("코드 검증 중...")
@@ -176,6 +228,19 @@ def execute_pipeline(
         # 결과 dict 에 additive 로 추가한다. pre-Wave-5-F 응답 셰이프 보존.
         if optimization_summary is not None:
             result_data["llm_optimization"] = optimization_summary
+
+        # Wave 5-N: audit dict / audit-path 최적화 summary / llm_error 부착.
+        # ``llm_audit`` 키는 audit 호출이 성공한 경우에만 등장한다.
+        if audit_result_dict is not None:
+            result_data["llm_audit"] = audit_result_dict
+        if audit_optimization_summary is not None:
+            existing_opt = result_data.get("llm_optimization")
+            if not isinstance(existing_opt, dict):
+                existing_opt = {}
+            existing_opt["clean_audit"] = audit_optimization_summary
+            result_data["llm_optimization"] = existing_opt
+        if pipeline_result.llm_error is not None:
+            result_data["llm_error"] = pipeline_result.llm_error
 
         # DB 저장
         db_error = _persist_to_db(result_data)
@@ -318,6 +383,95 @@ def _generate_patches(
     except Exception as e:
         logger.warning(f"[PIPELINE] LLM 수정안 생성 실패: {e}")
         return [], str(e)
+
+
+def _generate_clean_audit(
+    code: str, filename: str, lang: str, provider: str, model: str,
+) -> tuple[dict, str | None]:
+    """Wave 5-N — ``DalloAgent.audit_code`` 로 clean-audit fallback 을 수행한다.
+
+    정적 분석이 0건일 때만 ``execute_pipeline`` 에서 호출된다. 반환 dict 는
+    ``audit_code`` 가 정규화한 ``{"status": ..., "summary": ..., "findings":
+    [...]}`` 셰이프를 그대로 따른다. 호출 실패 시 빈 dict 와 에러 문자열을
+    돌려준다 — 호출부가 ``llm_error`` 만 채우고 파이프라인은 정상 종료한다.
+    """
+    try:
+        from agent.llm_agent import DalloAgent
+        agent = DalloAgent(provider=provider, model=model)
+        audit = agent.audit_code(code, filename, lang)
+        return audit, None
+    except Exception as e:
+        logger.warning(f"[PIPELINE] LLM 감사 분석 실패: {e}")
+        return {}, str(e)
+
+
+def _audit_findings_to_vulnerabilities(
+    audit: dict, filename: str, lang: str, source_code: str = "",
+) -> list:
+    """Wave 5-N — audit findings 를 ``llm_audit_`` prefix 의 ``VulnerabilityReport``
+    리스트로 변환한다.
+
+    - ``id`` 는 ``llm_audit_<index>_<cwe>_<line>`` 형태로 유일하게 부여된다.
+    - ``tool`` 은 항상 ``"llm_audit"`` — Red/Blue summary 가 정적 분석 결과와
+      구분할 수 있도록 한다.
+    - ``function_code`` 는 caller 가 전달한 ``source_code`` 를 그대로 유지해
+      Blue Team 패치 프롬프트가 원본 코드를 참조하도록 한다.
+    - audit dict 가 비정상이면 빈 리스트를 반환 (방어적).
+    """
+    from shared.schemas import VulnerabilityReport
+
+    out: list = []
+    if not isinstance(audit, dict):
+        return out
+    findings = audit.get("findings")
+    if not isinstance(findings, list):
+        return out
+
+    for index, finding in enumerate(findings, start=1):
+        if not isinstance(finding, dict):
+            continue
+        cwe_raw = finding.get("cwe_id") or ""
+        cwe = cwe_raw if isinstance(cwe_raw, str) else ""
+        line_raw = finding.get("line_number")
+        try:
+            line_number = int(line_raw) if line_raw is not None else 0
+        except (TypeError, ValueError):
+            line_number = 0
+        severity_raw = finding.get("severity") or "MEDIUM"
+        severity = (
+            severity_raw.upper() if isinstance(severity_raw, str) else "MEDIUM"
+        )
+        cwe_part = cwe.replace("-", "_").replace(":", "_") if cwe else "noCwe"
+        vuln_id = f"llm_audit_{index:03d}_{cwe_part}_{line_number}"
+
+        title = finding.get("title") or "LLM Audit Finding"
+        reason = finding.get("reason") or ""
+        recommendation = finding.get("recommendation") or ""
+        description = reason
+        if recommendation:
+            description = (
+                f"{reason}\n권장 수정: {recommendation}" if reason
+                else f"권장 수정: {recommendation}"
+            )
+
+        out.append(VulnerabilityReport(
+            id=vuln_id,
+            tool="llm_audit",
+            rule_id=cwe or "llm_audit",
+            severity=severity if severity in ("HIGH", "MEDIUM", "LOW") else "MEDIUM",
+            confidence="MEDIUM",
+            title=title if isinstance(title, str) else "LLM Audit Finding",
+            description=description,
+            file_path=filename,
+            line_number=line_number,
+            code_snippet=finding.get("evidence") or "",
+            function_code=source_code or "",
+            file_imports="",
+            cwe_id=cwe or None,
+            language=lang or "python",
+            more_info=recommendation if isinstance(recommendation, str) else "",
+        ))
+    return out
 
 
 def _validate_syntax(patches: list, lang: str):

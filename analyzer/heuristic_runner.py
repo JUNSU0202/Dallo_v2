@@ -16,6 +16,11 @@ production 동작은 바꾸지 않는다. 본 wave 에서는 production caller 0
 - ``match_mode="all"`` / ``require_all=True`` 옵트인 정책은 Wave 5-H2 quick_scan
   policy seam 과 같은 의미를 가진다. all-mode 룰에 invalid regex 가 섞이면
   fail-closed (룰 전체 스킵). any-mode 룰의 invalid regex 는 조용히 스킵된다.
+- ``match_mode="all_file"`` 은 Wave 5-N 에서 도입된 파일 전역 all-pattern
+  매칭이다. 세 마커가 서로 다른 라인에 흩어진 WebGoat-like AUTH-BYPASS 같은
+  케이스를 위해 옵트인한다. 룰당 finding 은 최대 1 건이며 패턴 리스트의
+  마지막 패턴의 첫 매치 라인이 evidence 로 보고된다. invalid regex 가 섞이면
+  fail-closed 다.
 """
 
 from __future__ import annotations
@@ -25,14 +30,21 @@ import re
 from analyzer.quick_scan import QUICK_SCAN_RULES
 
 
-def _rule_requires_all(rule: dict) -> bool:
-    """all-mode opt-in 판정 (Wave 5-H2 quick_scan 정책과 동일 의미)."""
+def _rule_match_mode(rule: dict) -> str:
+    """정규 매칭 모드 ('any' | 'all' | 'all_file') 반환.
+
+    Wave 5-H2 quick_scan 정책과 동일 의미. ``require_all=True`` 는 'all' 의
+    alias. ``match_mode="all_file"`` 은 Wave 5-N 의 파일 전역 all-pattern 매칭
+    옵트인 신호다. 그 외 모든 메타데이터는 legacy 'any' 동작으로 유지된다.
+    """
     if rule.get("require_all") is True:
-        return True
+        return "all"
     mode = rule.get("match_mode")
-    if isinstance(mode, str) and mode.lower() == "all":
-        return True
-    return False
+    if isinstance(mode, str):
+        normalized = mode.lower()
+        if normalized in ("all", "all_file"):
+            return normalized
+    return "any"
 
 
 def _make_finding(rule: dict, line_num: int, line_text: str) -> dict:
@@ -71,8 +83,9 @@ def scan_text(code: str, language: str, rules: list | None = None) -> list:
         if language not in rule.get("languages", ()):
             continue
         patterns = rule.get("patterns") or ()
+        mode = _rule_match_mode(rule)
 
-        if _rule_requires_all(rule):
+        if mode == "all":
             # all-mode: 모든 패턴이 동일 라인에서 매치된 라인에만 finding.
             # 패턴 중 하나라도 invalid regex 이면 룰 전체 fail-closed.
             try:
@@ -84,6 +97,34 @@ def scan_text(code: str, language: str, rules: list | None = None) -> list:
             for line_num, line_text in enumerate(lines, 1):
                 if all(rx.search(line_text) for rx in regexes):
                     findings.append(_make_finding(rule, line_num, line_text))
+            continue
+
+        if mode == "all_file":
+            # all_file-mode: 모든 패턴이 파일 전역에서 (서로 다른 라인이어도)
+            # 한 번 이상 매치되어야 한 건의 finding 을 만든다. invalid regex 가
+            # 섞이면 fail-closed. 룰당 finding 은 최대 1 건이며 패턴 리스트의
+            # 마지막 패턴의 첫 매치 라인을 evidence 로 보고한다.
+            try:
+                regexes = [re.compile(p, re.IGNORECASE) for p in patterns]
+            except re.error:
+                continue
+            if not regexes:
+                continue
+            anchor_matches: list = []
+            all_matched = True
+            for rx in regexes:
+                hit = None
+                for line_num, line_text in enumerate(lines, 1):
+                    if rx.search(line_text):
+                        hit = (line_num, line_text)
+                        break
+                if hit is None:
+                    all_matched = False
+                    break
+                anchor_matches.append(hit)
+            if all_matched and anchor_matches:
+                line_num, line_text = anchor_matches[-1]
+                findings.append(_make_finding(rule, line_num, line_text))
             continue
 
         # legacy any-mode: 한 패턴이라도 매치되면 finding, invalid regex 는 스킵.

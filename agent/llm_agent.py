@@ -14,6 +14,7 @@ LLM에 전달하고, 수정안(PatchSuggestion)을 반환합니다.
   patches = agent.generate_patches(vulnerabilities)
 """
 
+import json
 import os
 import re
 import sys
@@ -557,6 +558,177 @@ Code Remediation Engineer) 입니다. 단순한 코드 리뷰어가 아니라, �
             explanation = "LLM이 수정 근거를 제공하지 않았습니다."
 
         return fixed_code, explanation
+
+    _VALID_AUDIT_STATUSES = ("clean", "suspicious", "reviewed")
+    _AUDIT_FALLBACK_SUMMARY = (
+        "LLM 응답을 JSON 으로 파싱하지 못해 수동 검토가 필요합니다."
+    )
+
+    def audit_code(
+        self,
+        code: str,
+        filename: str,
+        language: str,
+        max_chars: int = 4000,
+    ) -> dict:
+        """파일 내용을 LLM 에 감사 요청하고 정규화된 결과 dict 를 반환한다.
+
+        - ``code`` 는 ``max_chars`` 까지 안전하게 트리밍된다.
+        - ``self._provider.call(prompt, system=SYSTEM_PROMPT)`` 를 한 번 호출.
+        - 응답은 fenced JSON / bare JSON / raw JSON 모두 허용한다.
+        - 파싱 실패 시 ``status="reviewed"`` / ``findings=[]`` / 안전한
+          fallback summary (입력 코드나 raw 응답을 echo 하지 않음) 를 반환한다.
+        """
+        safe_code = code if isinstance(code, str) else ""
+        if not isinstance(max_chars, int) or max_chars < 0:
+            max_chars = 4000
+        trimmed = safe_code[:max_chars]
+
+        prompt = self._build_audit_prompt(trimmed, filename, language)
+        response = self._provider.call(prompt, system=SYSTEM_PROMPT)
+
+        parsed = self._extract_audit_json(response)
+        if parsed is None:
+            return {
+                "status": "reviewed",
+                "summary": self._AUDIT_FALLBACK_SUMMARY,
+                "findings": [],
+            }
+        return self._normalize_audit_response(parsed)
+
+    @staticmethod
+    def _build_audit_prompt(code: str, filename: str, language: str) -> str:
+        """audit_code 프롬프트 빌더 — JSON 단일 객체 출력 계약을 명시한다."""
+        return (
+            f"당신은 보안 코드 감사 전문가입니다. 아래 {language} 파일의\n"
+            f"코드를 감사하고 결과를 **JSON 객체 하나** 로만 반환하세요.\n"
+            f"\n"
+            f"## 대상 파일\n"
+            f"- 파일명: {filename}\n"
+            f"- 언어: {language}\n"
+            f"\n"
+            f"## 코드 (max_chars 트리밍 적용)\n"
+            f"```\n"
+            f"{code}\n"
+            f"```\n"
+            f"\n"
+            f"## 응답 형식 (JSON 외 텍스트 금지)\n"
+            f"```json\n"
+            f"{{\n"
+            f'  "status": "clean | suspicious | reviewed",\n'
+            f'  "summary": "한 줄 요약",\n'
+            f'  "findings": [\n'
+            f"    {{\n"
+            f'      "title": "취약점 제목",\n'
+            f'      "cwe_id": "CWE-XXX 또는 빈 문자열",\n'
+            f'      "severity": "HIGH | MEDIUM | LOW",\n'
+            f'      "line_number": 0,\n'
+            f'      "evidence": "취약 코드 라인",\n'
+            f'      "reason": "왜 위험한지",\n'
+            f'      "recommendation": "수정 제안"\n'
+            f"    }}\n"
+            f"  ]\n"
+            f"}}\n"
+            f"```\n"
+            f"\n"
+            f"규칙:\n"
+            f"- 명백한 보안 이슈가 없으면 status=\"clean\", findings=[].\n"
+            f"- 잠재적 의심이 있으면 status=\"suspicious\" 로 findings 채움.\n"
+            f"- 확신할 수 없으면 status=\"reviewed\".\n"
+            f"- JSON 객체 1개 외 어떤 텍스트도 출력하지 마세요.\n"
+        )
+
+    @staticmethod
+    def _extract_audit_json(text) -> Optional[dict]:
+        """fenced / bare / raw JSON 을 시도. dict 추출 실패 시 None 반환.
+
+        ``extract_json_from_response`` (response_parser) 와 달리, *파싱 실패*
+        와 *유효한 빈 dict ({})* 를 구분하기 위해 sentinel 로 None 을 사용한다.
+        """
+        if not isinstance(text, str) or not text.strip():
+            return None
+
+        fenced = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+        if fenced:
+            try:
+                parsed = json.loads(fenced.group(1).strip())
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        brace = re.search(r"\{[\s\S]*\}", text)
+        if brace:
+            try:
+                parsed = json.loads(brace.group(0))
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        try:
+            parsed = json.loads(text.strip())
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+        return None
+
+    @classmethod
+    def _normalize_audit_response(cls, parsed: dict) -> dict:
+        """파싱된 dict 를 도큐먼티드 스키마로 정규화한다 (방어적)."""
+        raw_findings = parsed.get("findings") if isinstance(parsed, dict) else None
+        findings: list[dict] = []
+        if isinstance(raw_findings, list):
+            for item in raw_findings:
+                if not isinstance(item, dict):
+                    continue
+                findings.append(cls._normalize_audit_finding(item))
+
+        raw_status = parsed.get("status") if isinstance(parsed, dict) else None
+        if isinstance(raw_status, str) and raw_status in cls._VALID_AUDIT_STATUSES:
+            status = raw_status
+        else:
+            status = "suspicious" if findings else "clean"
+
+        raw_summary = parsed.get("summary") if isinstance(parsed, dict) else None
+        summary = raw_summary if isinstance(raw_summary, str) else ""
+
+        return {
+            "status": status,
+            "summary": summary,
+            "findings": findings,
+        }
+
+    @staticmethod
+    def _normalize_audit_finding(item: dict) -> dict:
+        def _s(value) -> str:
+            return value if isinstance(value, str) else ""
+
+        severity_raw = item.get("severity")
+        severity = severity_raw.upper() if isinstance(severity_raw, str) else ""
+
+        line_raw = item.get("line_number")
+        if isinstance(line_raw, bool):
+            line_number = 0
+        elif isinstance(line_raw, int):
+            line_number = line_raw
+        else:
+            try:
+                line_number = int(line_raw)
+            except (TypeError, ValueError):
+                line_number = 0
+
+        return {
+            "title": _s(item.get("title")),
+            "cwe_id": _s(item.get("cwe_id")),
+            "severity": severity,
+            "line_number": line_number,
+            "evidence": _s(item.get("evidence")),
+            "reason": _s(item.get("reason")),
+            "recommendation": _s(item.get("recommendation")),
+        }
 
 
 # CLI에서 직접 테스트할 수 있도록

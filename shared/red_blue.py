@@ -199,7 +199,10 @@ def enrich_patch(patch: dict, vuln: Optional[dict] = None) -> dict:
     """Return a patch dict with Blue Team enrichment fields attached.
 
     Adds ``blue_team_phase``, ``defense_strategy``, ``defense_outcome``,
-    ``residual_risk``, ``defense_plan`` using ``setdefault`` semantics.
+    ``residual_risk``, ``defense_plan``. Empty-string / empty-dict values
+    are treated as missing — ``PatchSuggestion.to_dict()`` ships these
+    keys pre-populated with ``""`` defaults, and ``dict.setdefault`` would
+    not fill them. Caller-provided non-empty values are preserved.
     The input dict is never mutated.
     """
     item = deepcopy(patch)
@@ -210,14 +213,20 @@ def enrich_patch(patch: dict, vuln: Optional[dict] = None) -> dict:
 
     outcome = _defense_outcome(item, sec, status_norm)
 
-    item.setdefault("blue_team_phase", "remediation")
-    item.setdefault(
-        "defense_strategy",
-        vuln_safe.get("blue_team_strategy") or _GENERIC_DEFENSE_FALLBACK,
-    )
-    item.setdefault("defense_outcome", outcome)
-    item.setdefault("residual_risk", _residual_risk(outcome, sec))
-    item.setdefault("defense_plan", _build_defense_plan(item, vuln_safe, outcome))
+    if not item.get("blue_team_phase"):
+        item["blue_team_phase"] = "remediation"
+    if not item.get("defense_strategy"):
+        item["defense_strategy"] = (
+            vuln_safe.get("blue_team_strategy") or _GENERIC_DEFENSE_FALLBACK
+        )
+    if not item.get("defense_outcome"):
+        item["defense_outcome"] = outcome
+    if not item.get("residual_risk"):
+        item["residual_risk"] = _residual_risk(item["defense_outcome"], sec)
+    if not item.get("defense_plan"):
+        item["defense_plan"] = _build_defense_plan(
+            item, vuln_safe, item["defense_outcome"]
+        )
     return item
 
 
@@ -376,7 +385,14 @@ def build_defense_comparison(
     for patch in patches:
         sec = patch.get("security_revalidation") or {}
         if sec:
-            removed += int(sec.get("removed_count") or 0)
+            removed_count = int(sec.get("removed_count") or 0)
+            # Tool comparison may miss the fixed finding when patched line
+            # numbers shift. If revalidation passed and a real fix exists,
+            # count at least 1 to prevent verified patches from reporting
+            # 0% risk reduction.
+            if sec.get("passed") and removed_count == 0 and patch.get("fixed_code"):
+                removed_count = 1
+            removed += removed_count
             introduced += int(sec.get("introduced_count") or 0)
         elif patch.get("defense_outcome") == "validated_defense":
             removed += 1

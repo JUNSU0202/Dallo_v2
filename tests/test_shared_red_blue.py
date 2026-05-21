@@ -392,6 +392,171 @@ def test_build_defense_comparison_rounding_to_one_decimal():
 
 
 # ---------------------------------------------------------------------------
+# 5b. Wave 5-N — e474680 회귀: verified 패치인데 removed_count=0 인 경우 보정
+# ---------------------------------------------------------------------------
+#
+# 배경:
+#   Bandit/Semgrep 같은 도구 비교 단계에서 패치 코드의 라인 매핑이 달라져
+#   ``security_revalidation.removed_count`` 가 0 으로 보고될 수 있다.
+#   그러나 ``security_revalidation.passed == True`` 이고 ``fixed_code`` 가
+#   실제로 생성된 상태라면 도메인적으로 "방어가 검증됐다" 가 맞고, 비교 누락
+#   하나로 risk_reduction_percent 가 0% 로 보고되는 회귀를 막아야 한다.
+#   (e474680: fix: generate blue team patches for audit findings)
+#
+
+def test_build_defense_comparison_verified_with_zero_removed_count_corrects_to_one():
+    """passed=True + removed_count=0 + fixed_code → 1 건 fixed 로 보정."""
+    vulns = [{"id": "v1", "cwe_id": "CWE-89"}]
+    patches = [
+        {
+            "vulnerability_id": "v1",
+            "fixed_code": "SAFE_CODE",
+            "security_revalidation": {
+                "passed": True,
+                "removed_count": 0,
+                "introduced_count": 0,
+            },
+        },
+    ]
+    out = build_defense_comparison(vulns, patches)
+    assert out["fixed_count"] == 1, (
+        f"passed+fixed_code 인데 fixed_count 가 0 — 비교 누락이 보정되지 않음: {out}"
+    )
+    assert out["remaining_count"] == 0
+    assert out["risk_reduction_percent"] == 100.0
+
+
+def test_build_red_blue_summary_verified_zero_removed_blocks_attack_path():
+    """동일 조건에서 attack_paths[0].status == 'BLOCKED' (방어 검증)."""
+    vulns = [{"id": "v1", "cwe_id": "CWE-89"}]
+    patches = [
+        {
+            "vulnerability_id": "v1",
+            "fixed_code": "SAFE_CODE",
+            "security_revalidation": {
+                "passed": True,
+                "removed_count": 0,
+                "introduced_count": 0,
+            },
+        },
+    ]
+    summary = build_red_blue_summary(vulns, patches, include_attack_paths=True)
+    assert summary["comparison"]["fixed_count"] == 1
+    assert summary["comparison"]["risk_reduction_percent"] == 100.0
+    assert summary["blue_team"]["patches_verified"] == 1
+    assert summary["attack_paths"][0]["status"] == "BLOCKED"
+
+
+def test_build_defense_comparison_passed_zero_removed_no_fixed_code_not_corrected():
+    """``fixed_code`` 가 없으면 보정하지 않는다 — 정말 빈 패치를 1 건으로 부풀리면 안 된다."""
+    vulns = [{"id": "v1"}]
+    patches = [
+        {
+            "vulnerability_id": "v1",
+            "fixed_code": "",
+            "security_revalidation": {
+                "passed": True,
+                "removed_count": 0,
+                "introduced_count": 0,
+            },
+        },
+    ]
+    out = build_defense_comparison(vulns, patches)
+    assert out["fixed_count"] == 0
+    assert out["risk_reduction_percent"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 5c. Wave 5-N — e474680 회귀: enrich_patch 가 빈 문자열 Blue Team 필드를 채운다
+# ---------------------------------------------------------------------------
+#
+# 배경:
+#   ``PatchSuggestion.to_dict()`` 또는 외부 직렬화 경로가 Blue Team 키를
+#   빈 문자열 ``""`` 로 미리 채워서 보낼 수 있다. ``setdefault`` 는 키가
+#   *없을* 때만 default 를 채우므로 빈 문자열은 그대로 남아 대시보드가
+#   "verified=0" 으로 잘못 보고하는 회귀가 발생했다. ``if not item.get(...)``
+#   falsy 체크로 빈 문자열도 채워지도록 한다 (e474680).
+#
+
+def test_enrich_patch_fills_empty_string_blue_team_phase():
+    patch = {
+        "vulnerability_id": "v1",
+        "fixed_code": "SAFE",
+        "blue_team_phase": "",
+    }
+    out = enrich_patch(patch)
+    assert out["blue_team_phase"] == "remediation"
+
+
+def test_enrich_patch_fills_empty_string_defense_strategy():
+    patch = {
+        "vulnerability_id": "v1",
+        "fixed_code": "SAFE",
+        "defense_strategy": "",
+    }
+    out = enrich_patch(patch)
+    assert isinstance(out["defense_strategy"], str)
+    assert out["defense_strategy"], "defense_strategy 가 여전히 빈 문자열로 남아 있다"
+
+
+def test_enrich_patch_fills_empty_string_defense_outcome():
+    patch = {
+        "vulnerability_id": "v1",
+        "fixed_code": "SAFE",
+        "syntax_valid": True,
+        "security_revalidation": {"passed": True, "removed_count": 1, "introduced_count": 0},
+        "defense_outcome": "",
+    }
+    out = enrich_patch(patch)
+    assert out["defense_outcome"] == "validated_defense"
+
+
+def test_enrich_patch_fills_empty_string_residual_risk():
+    patch = {
+        "vulnerability_id": "v1",
+        "fixed_code": "SAFE",
+        "syntax_valid": True,
+        "security_revalidation": {"passed": True, "removed_count": 1, "introduced_count": 0},
+        "residual_risk": "",
+    }
+    out = enrich_patch(patch)
+    assert out["residual_risk"] == "low"
+
+
+def test_enrich_patch_fills_empty_dict_defense_plan():
+    patch = {
+        "vulnerability_id": "v1",
+        "fixed_code": "SAFE",
+        "syntax_valid": True,
+        "security_revalidation": {"passed": True, "removed_count": 1, "introduced_count": 0},
+        "defense_plan": {},
+    }
+    out = enrich_patch(patch)
+    plan = out["defense_plan"]
+    assert isinstance(plan, dict) and plan, "defense_plan 이 여전히 빈 dict 로 남아 있다"
+    assert plan["status"] == "BLOCKED"
+
+
+def test_enrich_patch_preserves_caller_truthy_blue_team_values():
+    """이미 caller 가 채운 truthy 값은 falsy 체크로 보존된다 (idempotency)."""
+    patch = {
+        "vulnerability_id": "v1",
+        "fixed_code": "SAFE",
+        "blue_team_phase": "custom_phase",
+        "defense_strategy": "custom_strategy",
+        "defense_outcome": "validated_defense",
+        "residual_risk": "low",
+        "defense_plan": {"finding_id": "v1", "status": "BLOCKED"},
+    }
+    out = enrich_patch(patch)
+    assert out["blue_team_phase"] == "custom_phase"
+    assert out["defense_strategy"] == "custom_strategy"
+    assert out["defense_outcome"] == "validated_defense"
+    assert out["residual_risk"] == "low"
+    assert out["defense_plan"] == {"finding_id": "v1", "status": "BLOCKED"}
+
+
+# ---------------------------------------------------------------------------
 # 6. build_attack_paths
 # ---------------------------------------------------------------------------
 
